@@ -46,4 +46,6 @@ execFileSync(bun, [
 ], { cwd: root, stdio: 'inherit' });
 // Bun 自报启动文件路径，避免依赖调用方的 PATH 或工作目录。
 const bunExecutable = execFileSync(bun, ['--no-env-file', '-e', 'process.stdout.write(process.execPath)'], { encoding: 'utf8' });
-copyFileSync(bunExecutable, path.join(directory, `notification-runtime-${target[0]}${target[1]}`));
+const destination = path.join(directory, `notification-runtime-${target[0]}${target[1]}`);
+// 构建工具也可直接使用已准备好的 sidecar，避免原地改写正在使用的签名文件。
+if (path.resolve(bunExecutable) !== path.resolve(destination)) copyFileSync(bunExecutable, destination);
