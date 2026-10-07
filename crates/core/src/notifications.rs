@@ -1,6 +1,6 @@
 //! Core 持有 SDK 子进程及凭据，桌面界面仅接收连接与绑定状态。
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     path::{Path, PathBuf},
     process::Stdio,
     sync::{
@@ -129,11 +129,16 @@ pub struct NotificationRuntime {
     bindings: Arc<Mutex<BTreeMap<String, Value>>>,
     credential_updates: Arc<Mutex<BTreeMap<String, Value>>>,
     account_cancellations: Arc<Mutex<BTreeMap<String, AccountCancellation>>>,
+    diagnostics: Arc<Mutex<VecDeque<Value>>>,
     closing: Arc<AtomicBool>,
     shutdown_signal: Arc<Notify>,
 }
 
 impl NotificationRuntime {
+    pub fn take_diagnostics(&self) -> Vec<Value> {
+        self.diagnostics.lock().unwrap().drain(..).collect()
+    }
+
     pub fn set_path(&self, path: impl AsRef<Path>) {
         *self.path.lock().unwrap() = Some(path.as_ref().to_path_buf());
     }
@@ -285,12 +290,21 @@ impl NotificationRuntime {
         let credential_updates = self.credential_updates.clone();
         let stdout_closed = Arc::new(AtomicBool::new(false));
         let reader_closed = stdout_closed.clone();
+        let diagnostics = self.diagnostics.clone();
         let reader = tokio::spawn(async move {
             let mut lines = BufReader::new(stdout).lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 let Ok(value) = serde_json::from_str::<Value>(&line) else {
                     continue;
                 };
+                if value["event"] == "diagnostic" {
+                    if let Some(value) = safe_diagnostic(&value["data"]) {
+                        let mut records = diagnostics.lock().unwrap();
+                        if records.len() == 100 { records.pop_front(); }
+                        records.push_back(value);
+                    }
+                    continue;
+                }
                 if let Some(id) = value.get("id").and_then(Value::as_u64) {
                     if let Some(sender) = pending.lock().unwrap().remove(&id) {
                         // 平台报错可能包含凭据；公共诊断使用固定文案。
@@ -640,6 +654,27 @@ impl NotificationRuntime {
             &self.status_changed,
         );
     }
+}
+
+fn safe_diagnostic(data: &Value) -> Option<Value> {
+    let provider = data["provider"].as_str()?;
+    let stage = data["stage"].as_str()?;
+    if !["feishu", "dingtalk", "weixin", "wecom"].contains(&provider)
+        || !["connect", "send", "metadata"].contains(&stage) { return None; }
+    let mut result = json!({"provider":provider, "stage":stage});
+    for field in ["httpStatus", "durationMs"] {
+        if let Some(value) = data[field].as_u64() { result[field] = value.into(); }
+    }
+    if let Some(code) = data["providerCode"].as_str().filter(|code| code.len() <= 64 && (code.parse::<i64>().is_ok() || ["Forbidden.AccessDenied.AccessTokenPermissionDenied", "staffId.notExisted", "robot.oto.notExist", "chatbotId.notAllow.sendOTO"].contains(code))) {
+        result["providerCode"] = code.into();
+    }
+    if let Some(id) = data["requestId"].as_str().filter(|id| (8..=64).contains(&id.len()) && id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')) {
+        result["requestId"] = id.into();
+    }
+    if let Some(outcome) = data["outcome"].as_str().filter(|value| ["accepted", "failed", "unknown", "deferred"].contains(value)) {
+        result["outcome"] = outcome.into();
+    }
+    Some(result)
 }
 
 fn receive_event(
@@ -1022,6 +1057,16 @@ mod tests {
         assert_eq!(status["sendCounts"], json!({}));
         runtime.shutdown().await;
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn notification_diagnostics_keep_codes_and_discard_arbitrary_payloads() {
+        let result = safe_diagnostic(&json!({"provider":"feishu", "stage":"send", "providerCode":"230101", "requestId":"request-id-123", "httpStatus":403,
+            "token":"private-token", "message":"private credential", "outcome":"failed"})).unwrap();
+        assert_eq!(result["providerCode"], "230101");
+        assert_eq!(result["httpStatus"], 403);
+        assert!(!result.to_string().contains("private"));
+        assert!(safe_diagnostic(&json!({"provider":"private", "stage":"send"})).is_none());
     }
 
     #[tokio::test]

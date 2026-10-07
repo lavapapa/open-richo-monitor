@@ -80,8 +80,13 @@ pub(crate) async fn permission_state(_app: &AppHandle) -> Result<PermissionState
 #[cfg(target_os = "windows")]
 pub(crate) async fn permission_state(app: &AppHandle) -> Result<PermissionState, String> {
     let app_id = windows_app_id(&app.config().identifier, tauri::is_dev()).to_owned();
+    let display_name = app
+        .config()
+        .product_name
+        .clone()
+        .unwrap_or_else(|| "RichoMonitor".into());
     tauri::async_runtime::spawn_blocking(move || {
-        let setting = windows_notifier(&app_id, tauri::is_dev())
+        let setting = windows_notifier(&app_id, tauri::is_dev(), &display_name)
             .and_then(|notifier| windows_notification_setting(&notifier, &app_id, tauri::is_dev()))
             .map_err(|error| format!("Windows 通知权限读取失败，请重新检查：{error}"))?;
         windows_permission_from_setting(setting)
@@ -169,12 +174,13 @@ fn windows_app_id(identifier: &str, is_dev: bool) -> &str {
 fn windows_notifier(
     app_id: &str,
     is_dev: bool,
+    display_name: &str,
 ) -> windows::core::Result<windows::UI::Notifications::ToastNotifier> {
     if !is_dev {
         // Win32 通知使用 Windows 的 stub CLSID 与协议激活，身份独立于快捷方式索引。
         let key = windows_registry::CURRENT_USER
             .create(format!(r"Software\Classes\AppUserModelId\{app_id}"))?;
-        key.set_string("DisplayName", "RichoMonitor")?;
+        key.set_string("DisplayName", display_name)?;
         key.set_string("CustomActivator", "{DCBCE77E-8D71-4EF1-BF02-3B46C923DA47}")?;
         let protocol =
             windows_registry::CURRENT_USER.create(format!(r"Software\Classes\{app_id}"))?;
@@ -316,8 +322,13 @@ fn windows_toast_document(
 #[cfg(target_os = "windows")]
 async fn send_windows(app: &AppHandle, title: &'static str, body: String) -> Result<(), String> {
     let app_id = windows_app_id(&app.config().identifier, tauri::is_dev()).to_owned();
+    let display_name = app
+        .config()
+        .product_name
+        .clone()
+        .unwrap_or_else(|| "RichoMonitor".into());
     tauri::async_runtime::spawn_blocking(move || {
-        let notifier = windows_notifier(&app_id, tauri::is_dev())
+        let notifier = windows_notifier(&app_id, tauri::is_dev(), &display_name)
             .map_err(|error| format!("Windows 通知连接失败，请重新发送：{error}"))?;
         let setting = windows_notification_setting(&notifier, &app_id, tauri::is_dev())
             .map_err(|error| format!("Windows 通知权限读取失败，请重新检查：{error}"))?;
@@ -407,7 +418,12 @@ mod tests {
             let workers: Vec<_> = (0..8)
                 .map(|_| {
                     scope.spawn(|| {
-                        let notifier = super::windows_notifier(&app_id, false).unwrap();
+                        let notifier = super::windows_notifier(
+                            &app_id,
+                            false,
+                            "RichoMonitor notification test",
+                        )
+                        .unwrap();
                         super::windows_notification_setting(&notifier, &app_id, false).unwrap()
                     })
                 })
@@ -441,10 +457,11 @@ mod tests {
     fn windows_notifier_registers_identity_without_a_start_menu_shortcut() {
         let app_id = format!("dev.ricohmonitor.notification-test.{}", std::process::id());
         let path = format!(r"Software\Classes\AppUserModelId\{app_id}");
-        let notifier = super::windows_notifier(&app_id, false).unwrap();
+        let notifier =
+            super::windows_notifier(&app_id, false, "RichoMonitor notification test").unwrap();
         let result = (|| {
             let key = windows_registry::CURRENT_USER.open(&path)?;
-            assert_eq!(key.get_string("DisplayName")?, "RichoMonitor");
+            assert_eq!(key.get_string("DisplayName")?, "RichoMonitor notification test");
             super::windows_permission_from_setting(super::windows_notification_setting(
                 &notifier, &app_id, false,
             )?)
@@ -537,6 +554,10 @@ mod tests {
 
 #[cfg(target_os = "windows")]
 pub(crate) async fn request_permission(app: &AppHandle) -> Result<PermissionState, String> {
+    std::process::Command::new("explorer.exe")
+        .arg("ms-settings:notifications")
+        .spawn()
+        .map_err(|error| format!("无法打开 Windows 通知设置：{error}"))?;
     permission_state(app).await
 }
 

@@ -210,6 +210,7 @@ export interface PlatformSnapshot {
   loginStartEnabled: boolean | null;
   notificationPermission: "granted" | "denied" | "prompt" | "prompt_with_rationale" | "unavailable";
   notificationPermissionError: string | null;
+  notificationSettingsAvailable: boolean;
   projectUrl: string | null;
   tutorialUrl: string | null;
   feedbackUrl: string | null;
@@ -314,7 +315,7 @@ const previewSnapshot: DesktopSnapshot = {
   ],
   proxies: [],
   scan: null,
-  platform: { loginStartEnabled: false, notificationPermission: "granted", notificationPermissionError: null, projectUrl: null, tutorialUrl: null, feedbackUrl: null },
+  platform: { loginStartEnabled: false, notificationPermission: "granted", notificationPermissionError: null, notificationSettingsAvailable: false, projectUrl: null, tutorialUrl: null, feedbackUrl: null },
   recentEvents: [{ id: 1, at: "2026-10-04T09:18:00.284+08:00", kind: "stock_available", productId: "65", message: "商品 65 有货" }],
   recentChecks: [
     { productId: "65", name: "GR IIIx", availability: "in_stock", isShow: 1, stock: 3, at: "2026-10-04T09:18:00.284+08:00" },
@@ -590,13 +591,13 @@ export const desktopApi = {
     command<OperationResult>("set_onboarding_products", { productIds }),
   testProminentAlert: (productId: string) =>
     command<OperationResult>("test_prominent_alert", { productId }),
-  subscribeProminentAlert: async (receive: (alert: ProminentAlert & { presentationId: number }) => void): Promise<() => void> => {
+  subscribeProminentAlert: async (receive: (alert: ProminentAlert & { presentationId: number; waitForFrame: boolean }) => void): Promise<() => void> => {
     if (isPreview()) {
       const alert = await command<ProminentAlert | null>("get_prominent_alert");
-      if (alert) receive({ ...alert, presentationId: 0 });
+      if (alert) receive({ ...alert, presentationId: 0, waitForFrame: false });
       return () => {};
     }
-    const channel = new Channel<ProminentAlert & { presentationId: number }>();
+    const channel = new Channel<ProminentAlert & { presentationId: number; waitForFrame: boolean }>();
     channel.onmessage = receive;
     await invoke("subscribe_prominent_alert", { channel });
     return () => { channel.onmessage = () => {}; };
@@ -604,6 +605,9 @@ export const desktopApi = {
   showProminentAlert: (eventId: number, presentationId: number) => isPreview()
     ? Promise.resolve()
     : invoke<void>("show_prominent_alert", { eventId, presentationId }),
+  confirmProminentAlertFrame: (eventId: number, presentationId: number) => isPreview()
+    ? Promise.resolve()
+    : invoke<void>("confirm_prominent_alert_frame", { eventId, presentationId }),
   dismissProminentAlert: (eventId: number) =>
     command<OperationResult>("dismiss_prominent_alert", { eventId }),
   removeProduct: (productId: string) =>

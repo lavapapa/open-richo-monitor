@@ -18,7 +18,7 @@ pub(crate) fn current() -> std::io::Result<PathBuf> {
     Ok(runtime_path(&directory, TARGET, cfg!(debug_assertions)))
 }
 
-pub(crate) fn arguments(resources: &Path) -> Vec<String> {
+pub(crate) fn arguments(resources: &Path) -> std::io::Result<Vec<String>> {
     #[cfg(debug_assertions)]
     let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("binaries")
@@ -27,11 +27,20 @@ pub(crate) fn arguments(resources: &Path) -> Vec<String> {
     let script = resources.join("notification-runtime.mjs");
     #[cfg(debug_assertions)]
     let _ = resources;
-    vec![
+    let arguments = vec![
         "--no-env-file".into(),
         "--no-install".into(),
         script.to_string_lossy().into_owned(),
-    ]
+    ];
+    #[cfg(target_os = "windows")]
+    let arguments = arguments
+        .into_iter()
+        .chain([
+            "--system-proxy-helper".into(),
+            std::env::current_exe()?.to_string_lossy().into_owned(),
+        ])
+        .collect();
+    Ok(arguments)
 }
 
 fn runtime_path(directory: &Path, target: &str, debug: bool) -> PathBuf {

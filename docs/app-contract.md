@@ -64,7 +64,7 @@ app.subscribe() -> broadcast::Receiver<AppSnapshot>
 app.run() -> Result<(), AppError>
 ```
 
-`MonitoringAction` 为 `Start | Pause | Resume | Stop | Restart`，`ScanAction` 为 `Pause | Resume | Cancel`。Core 存储单一 `RunIntent { Stopped, Running, Paused }`，新库默认 `Stopped`；`Start/Resume/Restart` 写 `Running`，`Pause` 写 `Paused`，`Stop` 写 `Stopped`。桌面常驻进程及 Linux 前台 `run` 持有运行循环；独立 CLI 控制进程直接读写同一 SQLite intent，status 读取同一运行快照，不通过 socket、JSON-RPC 或临时 IPC。`run` 与 systemd 自动重启读取并遵从意愿。桌面新进程由 `MonitorApp::apply_startup_monitoring` 应用 `AppConfig.autoStartMonitoring`：开启且已完成设置时写入运行意愿，关闭时以停止状态打开；运行仍受监控计划约束。关窗、托盘重新显示和重复启动不再次应用该偏好，暂停状态因此保留。`set_auto_start_monitoring` 保存未来启动偏好，当前运行意愿保持不变；登录后启动由操作系统独立管理。正常退出保持当前意愿及有效待发送记录。HTTP 客户端按唯一 `AppConfig.useSystemProxy` 配置系统代理或直连；系统通知权限、登录启动等 OS 能力仍属平台适配。
+`MonitoringAction` 为 `Start | Pause | Resume | Stop | Restart`，`ScanAction` 为 `Pause | Resume | Cancel`。Core 存储单一 `RunIntent { Stopped, Running, Paused }`，新库默认 `Stopped`；`Start/Resume/Restart` 写 `Running`，`Pause` 写 `Paused`，`Stop` 写 `Stopped`。桌面常驻进程及 Linux 前台 `run` 持有运行循环；独立 CLI 控制进程直接读写同一 SQLite intent，status 读取同一运行快照，不通过 socket、JSON-RPC 或临时 IPC。`run` 与 systemd 自动重启读取并遵从意愿。桌面新进程由 `MonitorApp::apply_startup_monitoring` 应用 `AppConfig.autoStartMonitoring`：开启且已完成设置时写入运行意愿，关闭时以停止状态打开；运行仍受监控计划约束。关窗、托盘重新显示和重复启动不再次应用该偏好，暂停状态因此保留。`set_auto_start_monitoring` 保存未来启动偏好，当前运行意愿保持不变；登录后启动由操作系统独立管理。正常退出保持当前意愿及有效待发送记录。HTTP 客户端按唯一 `AppConfig.useSystemProxy` 配置系统代理或直连；Windows 库存、图片及通知请求按实际目标复用 WinHTTP 的 PAC、WPAD 与静态代理解析，解析在可取消的宿主子进程中执行并计入请求时限；其他系统沿用各自配置读取。系统通知权限、登录启动等 OS 能力仍属平台适配。
 
 `RuntimeSnapshot.lastSuccessAt` 表示当前已启用商品最近一次持久化成功观察，直接由这些商品的 `observation.checkedAt` 求最新值。暂停或重启后保留已有成功时间，未取得成功观察时为空；停用商品不参与该值。Core 快照提供这一事实，前端无需自行重建或缓存。
 
@@ -144,7 +144,7 @@ Tauri 保留 `MonitorApp` 状态、serde 快照广播、系统通知、托盘菜
 
 macOS 的权限查询、测试通知与监控通知统一使用 `UNUserNotificationCenter`。命令层等待提交回调并返回系统错误，应用前台展示由通知 delegate 负责；界面仅在权限尚未允许时显示授权状态。
 
-Windows 桌面版与 macOS 共用界面和业务用例。登录后启动使用当前用户的登录启动项，保存已安装应用的完整路径，启用与停用后的状态返回界面。目录由资源管理器打开，HTTP／HTTPS 链接交给默认浏览器；系统通知使用与安装器一致的应用标识，并在查询权限或投递前注册当前用户的通知应用信息与协议激活入口。首次权限查询缺少系统通知记录时，无横幅初始化后清除初始化消息，再读取真实权限；点击通知通过单实例入口显示主窗口，删除开始菜单快捷方式后仍可查询权限与投递，Windows 禁用或策略状态按真实权限返回。应用关闭窗口后保留系统托盘入口，退出时等待共享监控任务结束。
+Windows 桌面版与 macOS 共用界面和业务用例。初始窗口外框超过当前显示器工作区时使用系统最大化，首次引导及页面操作区保持可见；工作区扣除任务栏，并按实际像素比较。登录后启动使用当前用户的登录启动项，保存已安装应用的完整路径，启用与停用后的状态返回界面。目录由资源管理器打开，HTTP／HTTPS 链接交给默认浏览器；系统通知使用与安装器一致的应用标识，并在查询权限或投递前注册当前用户的通知应用信息与协议激活入口。首次权限查询缺少系统通知记录时，无横幅初始化后清除初始化消息，再读取真实权限；点击通知通过单实例入口显示主窗口，删除开始菜单快捷方式后仍可查询权限与投递，Windows 禁用或策略状态按真实权限返回。应用关闭窗口后保留系统托盘入口，退出时等待共享监控任务结束。
 
 Linux CLI 保留交互式设置、状态查看、商品/渠道/代理操作、扫描、测试、前台运行控制和 systemd unit 输出，直接调用相同 `MonitorApp`。删除 Unix socket/JSON-RPC 服务及其 framing、客户端管理和第二套命令协议；systemd 由 CLI 输出的 unit 管理进程，不建立第二个业务后台服务。
 

@@ -14,6 +14,8 @@ use serde_json::{json, Value};
 
 #[tokio::main]
 async fn main() {
+    #[cfg(target_os = "windows")]
+    if ricoh_monitor_core::system_proxy::windows::run_helper() { return; }
     if let Err(error) = execute().await {
         eprintln!("{error}");
         process::exit(2);
@@ -69,11 +71,19 @@ async fn execute() -> Result<(), Box<dyn std::error::Error>> {
         .map(PathBuf::from)
         .unwrap_or(notification_runtime.with_file_name("notification-runtime.mjs"));
     app.set_notification_runtime_path(notification_runtime);
-    app.set_notification_runtime_arguments(vec![
+    let runtime_arguments = vec![
         "--no-env-file".into(),
         "--no-install".into(),
         notification_script.to_string_lossy().into_owned(),
-    ]);
+    ];
+    #[cfg(target_os = "windows")]
+    let runtime_arguments = {
+        let mut args = runtime_arguments;
+        args.extend(["--system-proxy-helper".into(), env::current_exe()?.to_string_lossy().into_owned()]);
+        app.set_notification_proxy_url(ricoh_monitor_core::system_proxy::windows::current());
+        args
+    };
+    app.set_notification_runtime_arguments(runtime_arguments);
     match command.as_str() {
         "setup" => setup(&app, !json_mode).await?,
         "run" if positional.is_empty() => run(&app).await?,

@@ -153,12 +153,11 @@ pub(crate) fn bind(
     let binding = Binding::new(event_id, presentation_id);
     for (id, (key, name)) in binding.ids.into_iter().zip(KEYS) {
         if let Err(error) = unsafe { RegisterHotKey(Some(hwnd), id, MOD_NOREPEAT, key) } {
-            let mut error =
-                format!("无法注册提醒关闭键（{name}）：{error}。请关闭占用该键的软件后重试。");
-            if let Err(cleanup) = context.release(hwnd) {
-                error.push_str(&format!(" {cleanup}"));
-            }
-            return Err(error);
+            write_log(
+                &context.backend.data_dir,
+                &format!("提醒关闭键（{name}）不可用：{error}；关闭按钮仍可用。"),
+            );
+            continue;
         }
         context.registered.push(id);
     }

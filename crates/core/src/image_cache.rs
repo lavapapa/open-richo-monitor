@@ -21,6 +21,7 @@ pub enum ImageCacheError {
     ImageTooLarge { limit: u64 },
     CacheFull { limit: u64 },
     Transport(reqwest::Error),
+    SystemProxy(String),
     Io(std::io::Error),
     Index(serde_json::Error),
 }
@@ -41,6 +42,7 @@ impl fmt::Display for ImageCacheError {
                 formatter,
                 "图片缓存已满（上限 {limit} 字节），请清理已移除商品的缓存"
             ),
+            Self::SystemProxy(error) => write!(formatter, "商品图片系统代理解析失败：{error}"),
             Self::Transport(error) => write!(formatter, "商品图片连接失败或下载超时：{error}"),
             Self::Io(error) => write!(formatter, "图片缓存读写失败：{error}"),
             Self::Index(error) => write!(formatter, "图片缓存索引保存失败：{error}"),
@@ -87,6 +89,12 @@ struct CacheIndex {
 pub struct ImageCache {
     root: PathBuf,
     client: Client,
+    #[cfg(target_os = "windows")]
+    system_proxy: crate::system_proxy::windows::HttpProxy,
+    #[cfg(target_os = "windows")]
+    connect_timeout: Duration,
+    #[cfg(target_os = "windows")]
+    total_timeout: Duration,
     nonce: u64,
     max_image_bytes: u64,
     max_cache_bytes: u64,
@@ -131,7 +139,7 @@ impl ImageCache {
             .timeout(total_timeout)
             .retry(reqwest::retry::never())
             .redirect(Policy::none());
-        if !use_system_proxy {
+        if !use_system_proxy || cfg!(target_os = "windows") {
             builder = builder.no_proxy();
         }
         let client = builder.build()?;
@@ -151,6 +159,12 @@ impl ImageCache {
         Ok(Self {
             root,
             client,
+            #[cfg(target_os = "windows")]
+            system_proxy: crate::system_proxy::windows::HttpProxy::new(use_system_proxy),
+            #[cfg(target_os = "windows")]
+            connect_timeout,
+            #[cfg(target_os = "windows")]
+            total_timeout,
             nonce,
             max_image_bytes,
             max_cache_bytes,
@@ -169,7 +183,37 @@ impl ImageCache {
             return Ok(path);
         }
 
-        let mut response = self.client.get(parsed_url).send().await?;
+        #[cfg(target_os = "windows")]
+        let started = std::time::Instant::now();
+        #[cfg(target_os = "windows")]
+        let client = self
+            .system_proxy
+            .client(
+                parsed_url.as_str(),
+                &self.client,
+                |proxy| {
+                    let proxy = reqwest::Proxy::all(proxy)
+                        .map_err(|_| "Windows 系统代理地址无效".to_owned())?;
+                    Client::builder()
+                        .connect_timeout(self.connect_timeout)
+                        .timeout(self.total_timeout)
+                        .retry(reqwest::retry::never())
+                        .redirect(Policy::none())
+                        .no_proxy()
+                        .proxy(proxy)
+                        .build()
+                        .map_err(|_| "无法应用 Windows 系统代理".to_owned())
+                },
+                self.total_timeout,
+            )
+            .await
+            .map_err(ImageCacheError::SystemProxy)?;
+        #[cfg(not(target_os = "windows"))]
+        let client = &self.client;
+        let request = client.get(parsed_url);
+        #[cfg(target_os = "windows")]
+        let request = request.timeout(self.total_timeout.saturating_sub(started.elapsed()));
+        let mut response = request.send().await?;
         if !response.status().is_success() {
             return Err(ImageCacheError::HttpStatus {
                 status: response.status().as_u16(),

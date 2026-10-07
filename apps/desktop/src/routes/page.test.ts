@@ -55,7 +55,7 @@ function makeSnapshot(overrides: Partial<DesktopSnapshot> = {}): DesktopSnapshot
     products: [], catalog: [], channels: [], providers: [], proxies: [], scan: null,
     platform: {
       loginStartEnabled: false,
-      notificationPermission: "prompt", notificationPermissionError: null, projectUrl: null, tutorialUrl: null, feedbackUrl: null,
+      notificationPermission: "prompt", notificationPermissionError: null, notificationSettingsAvailable: false, projectUrl: null, tutorialUrl: null, feedbackUrl: null,
     },
     recentEvents: [], recentChecks: [],
     ...overrides,
@@ -193,6 +193,24 @@ describe("桌面主流程", () => {
     expect(screen.queryByText(/系统通知权限已关闭/)).toBeNull();
     expect(current.systemNotificationsEnabled).toBe(true);
     expect(bridge.invoke.mock.calls.some(([name]) => name === "request_notification_permission")).toBe(false);
+  });
+
+  it("Windows 提供系统通知设置入口，打开设置保持真实权限状态", async () => {
+    current.systemNotificationsEnabled = true;
+    current.platform!.notificationPermission = "denied";
+    current.platform!.notificationSettingsAvailable = true;
+    const invoke = bridge.invoke.getMockImplementation()!;
+    bridge.invoke.mockImplementation(async (name: string, args?: Record<string, any>) => {
+      if (name === "request_notification_permission") return structuredClone(current.platform);
+      return invoke(name, args);
+    });
+    render(Page);
+    await screen.findByRole("button", { name: "开始监控" });
+    await fireEvent.click(screen.getByRole("button", { name: "通知" }));
+    await fireEvent.click(screen.getByRole("button", { name: "系统通知设置" }));
+    await waitFor(() => expect(bridge.invoke.mock.calls.some(([name]) => name === "request_notification_permission")).toBe(true));
+    expect(screen.getByText("权限：已关闭")).toBeTruthy();
+    expect(current.platform!.notificationPermission).toBe("denied");
   });
 
   it("尚未决定通知权限可申请，拒绝后引导系统设置并停止重复申请", async () => {

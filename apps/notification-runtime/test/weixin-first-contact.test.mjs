@@ -130,7 +130,7 @@ test('微信旧连接结束后的迟到上下文不会污染重新扫码的新�
   await until(() => runtime.accounts.get('rebound').status === 'ready');
 });
 
-test('微信首次发送被平台拒绝时提示建立私聊，发送仍由平台回执判定', async (t) => {
+test('微信首次发送被拒绝保持真实错误，不推定私聊原因', async (t) => {
   let contacted = false;
   const sent = [];
   const runtime = new Runtime({ emit() {}, fetchImpl: async (_input, options) => {
@@ -143,7 +143,7 @@ test('微信首次发送被平台拒绝时提示建立私聊，发送仍由平�
   const params = { accountId: account.id, target: { id: 'owner', kind: 'user' }, text: '本地测试' };
   assert.deepEqual(await runtime.send(params), {
     outcome: 'failed', retryable: false,
-    message: '微信 iLink 拒绝发送（-2）。请向微信机器人发送一条私信，再点击测试。',
+    message: '微信 iLink 拒绝发送（-2）',
   });
   assert.equal(account.status, 'ready');
   contacted = true;

@@ -355,10 +355,11 @@ test('取消一条钉钉发送不取消其他发送共用的授权请求，账�
   assert.equal((await pending).outcome,'unknown');
 });
 
-test('钉钉 staffId.notExisted 提示重新发现个人接收对象且不可重试', async () => {
+test('钉钉 staffId.notExisted 保留平台错误并检查企业和接收对象', async () => {
   let calls = 0;
+  const events = [];
   const runtime = new Runtime({
-    emit: () => {},
+    emit: event => events.push(event),
     fetchImpl: async (input) => {
       calls += 1;
       if (String(input).endsWith('/oauth2/accessToken')) return Response.json({ accessToken: 'access-token' });
@@ -367,9 +368,10 @@ test('钉钉 staffId.notExisted 提示重新发现个人接收对象且不可重
   });
   runtime.accounts.set('dt-send', { id: 'dt-send', provider: 'dingtalk', credentials: { appId: 'app', appSecret: 'secret' }, targets: [], enabled: true, status: 'ready' });
   assert.deepEqual(await runtime.call('send', { accountId: 'dt-send', target: { id: '$old-target', kind: 'user' }, text: 'hello' }), {
-    outcome: 'failed', message: '钉钉接收对象已失效。请打开编辑，向机器人发送一条私信，再选择新识别的个人对象。', retryable: false,
+    outcome: 'failed', message: '钉钉接收对象已失效（staffId.notExisted）。请检查成员所属企业及接收对象。', retryable: false,
   });
   assert.equal(calls, 2);
+  assert.ok(events.some(event => event.event === 'diagnostic' && event.data.providerCode === 'staffId.notExisted'));
   await runtime.close();
 });
 
@@ -899,4 +901,18 @@ test('企微 SDK 关闭连接会拒绝未决 WebSocket 回执并清空 socket', 
   await socketClosed;
   assert.equal(server.clients.size, 0);
   await new Promise((resolve) => server.close(resolve));
+});
+
+
+test('渠道诊断保留平台错误码和追踪编号，不记录响应正文或凭据', async () => {
+  const events = [];
+  const runtime = new Runtime({ emit: (event) => events.push(event) });
+  try {
+    runtime.diagnostic('feishu', 'send', { response: { status: 403, data: { code: 230101, token: 'private-token' }, headers: { 'x-tt-logid': 'trace-id-123456' } }, message: 'private-token' });
+    const diagnostic = events.find((event) => event.event === 'diagnostic').data;
+    assert.equal(diagnostic.providerCode, '230101');
+    assert.equal(diagnostic.requestId, 'trace-id-123456');
+    assert.equal(diagnostic.httpStatus, 403);
+    assert.equal(JSON.stringify(diagnostic).includes('private'), false);
+  } finally { await runtime.close(); }
 });

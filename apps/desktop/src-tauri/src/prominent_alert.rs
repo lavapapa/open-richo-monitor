@@ -17,6 +17,7 @@ pub(crate) struct Presentation {
     #[serde(flatten)]
     alert: ProminentAlert,
     presentation_id: u64,
+    wait_for_frame: bool,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -179,7 +180,41 @@ mod windows_native {
         }
     }
 
+    pub(super) fn interactive_desktop() -> bool {
+        use windows::Win32::{
+            Foundation::HANDLE,
+            System::StationsAndDesktops::{
+                CloseDesktop, GetUserObjectInformationW, OpenInputDesktop, DESKTOP_CONTROL_FLAGS,
+                DESKTOP_READOBJECTS, UOI_NAME,
+            },
+        };
+        unsafe {
+            let Ok(desktop) =
+                OpenInputDesktop(DESKTOP_CONTROL_FLAGS(0), false, DESKTOP_READOBJECTS)
+            else {
+                return false;
+            };
+            let mut name = [0u16; 256];
+            let result = GetUserObjectInformationW(
+                HANDLE(desktop.0),
+                UOI_NAME,
+                Some(name.as_mut_ptr().cast()),
+                std::mem::size_of_val(&name) as u32,
+                None,
+            );
+            let _ = CloseDesktop(desktop);
+            result.is_ok()
+                && String::from_utf16_lossy(
+                    &name[..name.iter().position(|&c| c == 0).unwrap_or(name.len())],
+                )
+                .eq_ignore_ascii_case("Default")
+        }
+    }
+
     pub(super) fn verify(window: &WebviewWindow) -> Result<(), String> {
+        if !interactive_desktop() {
+            return Err("Windows 桌面已锁定，提醒将在解锁后显示。".into());
+        }
         let handle = handle(window)?;
         unsafe {
             if !IsWindowVisible(handle).as_bool() {
@@ -369,7 +404,7 @@ async fn show_overlay(
     window
         .with_webview(move |_platform| {
             // 校验与显示在同一主线程回调内完成，超时的旧页面回调不能显示下一次交付。
-            let mut pending = backend.prominent_view.displayed.lock().unwrap();
+            let pending = backend.prominent_view.displayed.lock().unwrap();
             let current = pending.as_ref().is_some_and(|pending| {
                 pending.event_id == event_id && pending.presentation_id == presentation_id
             });
@@ -391,12 +426,14 @@ async fn show_overlay(
                 };
                 #[cfg(target_os = "windows")]
                 let result = (|| {
-                    crate::windows_alert_keys::bind(
+                    if let Err(error) = crate::windows_alert_keys::bind(
                         &owner,
                         backend.clone(),
                         event_id,
                         presentation_id,
-                    )?;
+                    ) {
+                        crate::desktop_backend::write_log(&backend.data_dir, &error);
+                    }
                     *backend.prominent_view.previous_foreground.lock().unwrap() =
                         Some(windows_native::foreground());
                     owner.show().map_err(|error| error.to_string())?;
@@ -412,9 +449,11 @@ async fn show_overlay(
                 }
                 result
             };
-            if current {
-                let _ = pending.take().unwrap().sender.send(result.clone());
-            }
+            drop(pending);
+            #[cfg(not(target_os = "windows"))]
+            backend
+                .prominent_view
+                .complete(presentation_id, result.clone());
             let _ = sender.send(result);
         })
         .map_err(|error| error.to_string())?;
@@ -541,6 +580,7 @@ async fn present(
             .send(Presentation {
                 alert,
                 presentation_id,
+                wait_for_frame: cfg!(target_os = "windows"),
             })
             .map_err(|error| error.to_string())?;
         receiver.await.map_err(|error| error.to_string())?
@@ -569,6 +609,11 @@ async fn present(
 }
 
 #[tauri::command]
+pub fn get_prominent_alert(backend: State<'_, Arc<DesktopBackend>>) -> Option<ProminentAlert> {
+    backend.prominent_alert.lock().unwrap().clone()
+}
+
+#[tauri::command]
 pub fn subscribe_prominent_alert(
     backend: State<'_, Arc<DesktopBackend>>,
     channel: tauri::ipc::Channel<Presentation>,
@@ -590,10 +635,46 @@ pub async fn show_prominent_alert(
         }
         None => Err("提醒窗口已关闭。".into()),
     };
-    backend
-        .prominent_view
-        .complete(presentation_id, result.clone());
+    if result.is_err() {
+        backend
+            .prominent_view
+            .complete(presentation_id, result.clone());
+    }
     result
+}
+
+#[tauri::command]
+pub async fn confirm_prominent_alert_frame(
+    app: AppHandle,
+    backend: State<'_, Arc<DesktopBackend>>,
+    event_id: i64,
+    presentation_id: u64,
+) -> Result<(), String> {
+    let current = backend
+        .prominent_view
+        .displayed
+        .lock()
+        .unwrap()
+        .as_ref()
+        .is_some_and(|pending| {
+            pending.event_id == event_id && pending.presentation_id == presentation_id
+        });
+    if !current {
+        return Err("提醒已更新。".into());
+    }
+    #[cfg(target_os = "windows")]
+    if let Some(window) = app.get_webview_window(LABEL) {
+        if let Err(error) = windows_native::verify(&window) {
+            backend
+                .prominent_view
+                .complete(presentation_id, Err(error.clone()));
+            return Err(error);
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    let _ = app;
+    backend.prominent_view.complete(presentation_id, Ok(()));
+    Ok(())
 }
 
 pub(crate) fn forward(backend: Arc<DesktopBackend>, app: AppHandle) {
@@ -605,6 +686,11 @@ pub(crate) fn forward(backend: Arc<DesktopBackend>, app: AppHandle) {
                 != 0
             {
                 break;
+            }
+            #[cfg(target_os = "windows")]
+            if !windows_native::interactive_desktop() {
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                continue;
             }
             let mut retry = false;
             {

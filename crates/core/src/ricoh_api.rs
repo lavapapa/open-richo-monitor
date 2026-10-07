@@ -94,6 +94,8 @@ pub struct RicohApi {
     network_mode: &'static str,
     connect_timeout: Duration,
     request_timeout: Duration,
+    #[cfg(target_os = "windows")]
+    system_proxy: crate::system_proxy::windows::HttpProxy,
 }
 
 impl RicohApi {
@@ -173,7 +175,10 @@ impl RicohApi {
         } else {
             "直连"
         };
-        if !use_system_proxy {
+        #[cfg(target_os = "windows")]
+        let system_proxy =
+            crate::system_proxy::windows::HttpProxy::new(use_system_proxy && proxy.is_none());
+        if !use_system_proxy || cfg!(target_os = "windows") {
             builder = builder.no_proxy();
         }
         if let Some(proxy) = proxy {
@@ -188,6 +193,8 @@ impl RicohApi {
             network_mode,
             connect_timeout,
             request_timeout,
+            #[cfg(target_os = "windows")]
+            system_proxy,
         })
     }
 
@@ -213,8 +220,39 @@ impl RicohApi {
 
     async fn execute_bounded(&self, request: Request) -> Result<(u16, Vec<u8>), RicohApiError> {
         let started_at = Instant::now();
-        let mut response = self
-            .client
+        #[cfg(target_os = "windows")]
+        let client = self
+            .system_proxy
+            .client(
+                request.url().as_str(),
+                &self.client,
+                |proxy| {
+                    let proxy =
+                        Proxy::all(proxy).map_err(|_| "Windows 系统代理地址无效".to_owned())?;
+                    Self::build_with_timeouts_and_proxy(
+                        &self.endpoint,
+                        false,
+                        self.connect_timeout,
+                        self.request_timeout,
+                        Some(proxy),
+                    )
+                    .map(|api| api.client)
+                    .map_err(|_| "无法应用 Windows 系统代理".to_owned())
+                },
+                self.request_timeout,
+            )
+            .await
+            .map_err(RicohApiError::Transport)?;
+        #[cfg(target_os = "windows")]
+        let request = {
+            let mut request = request;
+            *request.timeout_mut() =
+                Some(self.request_timeout.saturating_sub(started_at.elapsed()));
+            request
+        };
+        #[cfg(not(target_os = "windows"))]
+        let client = &self.client;
+        let mut response = client
             .execute(request)
             .await
             .map_err(|error| self.transport_error(error, "发送请求", started_at))?;
