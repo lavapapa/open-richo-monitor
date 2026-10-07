@@ -73,7 +73,7 @@
     { id: "settings", label: "其他设置", icon: Settings2 },
   ] as const;
   const events: { id: ChannelEvent; label: string }[] = [
-    { id: "stock_available", label: "商品上架或库存增加" },
+    { id: "stock_available", label: "商品上架或补货" },
     { id: "monitoring_failed", label: "监控异常" },
     { id: "recovered", label: "监控恢复" },
   ];
@@ -120,7 +120,10 @@
   let scanEnd = "245";
   let channel: NotificationChannel | null = null;
   let channelFormOpen = false;
+  let channelFormExpanded = false;
   let channelConnected = false;
+  let channelRebindOnMount = false;
+  let channelBindingEditor: ChannelBinding;
   let channelToDeleteId: string | null = null;
   let deleteConfirmation: HTMLDivElement;
   let proxyToRemoveId: string | null = null;
@@ -201,6 +204,8 @@
   });
 
   $: currentProvider = snapshot?.providers.find((item) => item.id === providerId) ?? null;
+  $: channelFormExpanded = channelFormOpen && (channelMode === "manual" || !currentProvider?.supportsBinding || channelConnected && providerId !== "weixin");
+  $: channelFirstMessagePending = channelMode === "binding" && channelBinding?.status === "complete" && (providerId === "weixin" ? channelBinding.privateMessageReceived !== true : channelSelectedTargets.some(target => target.kind === "user") && channelBinding.privateChatReady === false);
   $: defaultChannelName = channelBinding?.botName || editingChannel?.botName || channelDefaultName(providerId);
   $: if (snapshot?.scan?.status === "running") scanResultDismissed = false;
   $: editingChannel = channel ? snapshot?.channels.find((item) => item.id === channel?.id) ?? channel : null;
@@ -665,6 +670,8 @@
     notice = null;
     channel = existing;
     channelConnected = false;
+    channelFormExpanded = false;
+    channelRebindOnMount = false;
     channelName = existing?.name ?? "";
     providerId = existing?.providerId ?? selectedProvider ?? snapshot?.providers[0]?.id ?? "";
     channelValues = {};
@@ -720,11 +727,12 @@
   }
 
   function connectionLabel(status?: string) {
-    return status === "ready" ? "已连接" : status === "auth_required" ? "需要重新授权" : status === "connecting" ? "连接中" : status === "reconnecting" ? "重新连接中" : status === "failed" ? "连接失败" : status === "stopped" ? "连接已停止" : "";
+    return status === "ready" ? "已连接" : status === "auth_required" ? "需要重新授权" : status === "connection_conflict" ? "连接被其他实例接管" : status === "connecting" ? "连接中" : status === "reconnecting" ? "重新连接中" : status === "failed" ? "连接失败" : status === "stopped" ? "连接已停止" : status === "awaiting_message" ? "等待首条消息" : "";
   }
 
   async function saveChannel() {
     if (!providerId || savingChannel) return;
+    if (channelFirstMessagePending) { channelError = providerId === "feishu" ? "请打开机器人应用，再返回保存。" : "请向机器人发送任意私信，再返回保存。"; return; }
     const enableAfterTest = !channel || channel.enabled;
     const usingBinding = currentProvider?.supportsBinding && channelMode === "binding";
     const manualTargetId = channelValues.targetId?.trim();
@@ -886,7 +894,21 @@
   }
 
   async function checkNotificationPermission(request = false) {
-    await run(() => request ? desktopApi.requestNotificationPermission() : desktopApi.refreshNotificationPermission());
+    if (request) {
+      await run(() => desktopApi.requestNotificationPermission());
+      return;
+    }
+    beginOperation();
+    notice = null;
+    try {
+      const platform = await desktopApi.refreshNotificationPermission();
+      if (snapshot) adopt({ ...snapshot, platform });
+    } catch {
+      // 检查结果以最终读取的权限状态为准，持续错误由平台状态区域展示。
+      await refresh();
+    } finally {
+      endOperation();
+    }
   }
 
   async function enableSetupNotifications() {
@@ -1003,6 +1025,7 @@
   <main class:status-page={page === "status"} bind:this={mainElement}>
     {#if page !== "settings"}<UpdateNotice mode="banner" status={updateStatus} checked={updateChecked} onCheck={checkUpdates} onInstall={installUpdate} />{/if}
     {#if snapshot?.systemNotificationsEnabled && snapshot.platform?.notificationPermission === "denied"}<p class="notice error" role="alert">系统通知权限已关闭。请在系统设置中开启本应用通知，返回后点击“检查权限”。{#if page !== "notifications"}<button on:click={() => navigate("notifications")}>通知设置</button>{/if}</p>{/if}
+    {#if snapshot?.systemNotificationsEnabled && snapshot.platform?.notificationPermissionError && notice?.text !== snapshot.platform.notificationPermissionError}<p class="notice error" role="alert">{snapshot.platform.notificationPermissionError}{#if page !== "notifications"}<button on:click={() => navigate("notifications")}>通知设置</button>{/if}</p>{/if}
     {#if error}<p class="notice error" role="alert">{error} <button on:click={refresh}>重试</button></p>{/if}
     {#if notice}<p class:success={notice.kind === "success"} class:error={notice.kind === "error"} class="notice toast" role={notice.kind === "error" ? "alert" : "status"}>{notice.text}<button aria-label="关闭" on:click={() => notice = null}>×</button></p>{/if}
     {#if loading && !snapshot}<p class="loading-state">正在读取状态…</p>
@@ -1058,7 +1081,7 @@
           <div class="system-notification-row">
             <h2>系统通知</h2>
             <label class="switch"><span>启用</span><input aria-label="启用系统通知" type="checkbox" disabled={pendingToggles.has("system-notifications")} checked={snapshot?.systemNotificationsEnabled ?? false} on:change={(event) => saveToggle("system-notifications", event.currentTarget, snapshot?.systemNotificationsEnabled ?? false, (enabled) => desktopApi.setSystemNotificationsEnabled(enabled))} /></label>
-            <small>权限：{snapshot?.platform?.notificationPermission === "granted" ? "已允许" : snapshot?.platform?.notificationPermission === "denied" ? "已关闭" : snapshot?.platform?.notificationPermission === "prompt" ? "首次发送时询问" : snapshot?.platform?.notificationPermission === "prompt_with_rationale" ? "需要授权" : "尚未确认"}</small>
+            <small>权限：{snapshot?.platform?.notificationPermission === "granted" ? "已允许" : snapshot?.platform?.notificationPermission === "denied" ? "已关闭" : snapshot?.platform?.notificationPermission === "unavailable" ? "暂时无法读取" : snapshot?.platform?.notificationPermission === "prompt" ? "首次发送时询问" : snapshot?.platform?.notificationPermission === "prompt_with_rationale" ? "需要授权" : "尚未确认"}</small>
             {#if snapshot?.platform?.notificationPermission === "prompt" || snapshot?.platform?.notificationPermission === "prompt_with_rationale"}<button class="secondary" disabled={busy} on:click={() => checkNotificationPermission(true)}>申请权限</button>{/if}
             <button class="secondary" disabled={busy} on:click={() => checkNotificationPermission()}>检查权限</button>
             <button class="secondary" disabled={busy} on:click={sendSystemTest}>发送测试</button>
@@ -1067,7 +1090,7 @@
           {#if snapshot?.systemNotificationDelivery}
             <p class="muted">最近系统通知：{snapshot.systemNotificationDelivery.outcome === "accepted" ? "已提交" : snapshot.systemNotificationDelivery.outcome === "unknown" ? "尚未确认送达" : "发送失败"} · {snapshot.systemNotificationDelivery.message}</p>
           {/if}
-          <div class="prominent-test-row"><p class="quiet">突出提醒会在商品上架、恢复有货或库存增加时覆盖屏幕，可通过商品旁的图标开启。</p><button class="secondary" disabled={busy || !productRows.length} on:click={testProminentAlert}>测试突出提醒</button></div>
+          <div class="prominent-test-row"><p class="quiet">突出提醒会在商品上架或补货时覆盖屏幕，可通过商品旁的图标开启。</p><button class="secondary" disabled={busy || !productRows.length} on:click={testProminentAlert}>测试突出提醒</button></div>
         </section>
         <section class="group">
           <div class="section-heading channel-heading"><h2>通知渠道</h2><ChannelAdd providers={snapshot?.providers ?? []} {busy} onAdd={(id) => editChannel(null, id)} /></div>
@@ -1191,12 +1214,12 @@
       </section>
     {/if}
       {#if channelFormOpen}
-          <dialog bind:this={channelDialog} class="channel-modal" aria-labelledby="channel-form-title" on:close={closeChannel} on:cancel={(event) => { if (savingChannel) event.preventDefault(); else closeChannel(); }}>
+          <dialog bind:this={channelDialog} class="channel-modal" class:configured={channelFormExpanded} aria-labelledby="channel-form-title" on:close={closeChannel} on:cancel={(event) => { if (savingChannel) event.preventDefault(); else closeChannel(); }}>
             <div class="section-heading"><h2 id="channel-form-title">{channel ? "编辑" : "添加"}{currentProvider?.name}</h2><button class="icon-button" aria-label="关闭" disabled={savingChannel} on:click={closeChannel}><X size={17} /></button></div>
             <div class="modal-body">
             {#if !currentProvider?.supportsBinding || channelMode === "manual"}<label class="field">渠道名称<input aria-label="渠道名称" bind:value={channelName} placeholder={defaultChannelName} /></label>{/if}
             {#if currentProvider?.supportsBinding}
-              {#if channelMode === "binding"}<ChannelBinding {providerId} providerName={currentProvider.name} existing={editingChannel} defaultName={defaultChannelName} bind:connected={channelConnected} bind:channelName bind:binding={channelBinding} bind:targetId={channelTargetId} bind:targetKind={channelTargetKind} bind:selectedTargets={channelSelectedTargets} />{/if}
+              {#if channelMode === "binding"}<ChannelBinding bind:this={channelBindingEditor} {providerId} providerName={currentProvider.name} existing={editingChannel} rebindOnMount={channelRebindOnMount} defaultName={defaultChannelName} bind:connected={channelConnected} bind:channelName bind:binding={channelBinding} bind:targetId={channelTargetId} bind:targetKind={channelTargetKind} bind:selectedTargets={channelSelectedTargets} />{/if}
             {/if}
             {#if currentProvider?.documentationUrl && (!currentProvider.supportsBinding || channelMode === "manual")}<button class="link-row" on:click={openProviderDocumentation}>查看{currentProvider.name}机器人配置说明 ↗</button>{/if}
             {#each currentProvider?.supportsBinding && channelMode === "binding" ? [] : currentProvider?.fields ?? [] as field}
@@ -1205,13 +1228,14 @@
                 {#if field.help}<small>{field.help}</small>{/if}
               </label>
             {/each}
-            {#if !currentProvider?.supportsBinding || channelMode === "manual" || channelConnected}
-            <fieldset class="subscriptions"><legend>提醒内容</legend>{#each events as event}<label><input type="checkbox" checked={channelEvents.includes(event.id)} on:change={() => toggleEvent(event.id)} />{event.label}</label>{/each}</fieldset>
-            {/if}
-            {#if currentProvider?.supportsBinding}<div class="channel-manual-tools"><button class="text-button" disabled={savingChannel} on:click={() => { channelMode = channelMode === "binding" ? "manual" : "binding"; channelBinding = null; channelConnected = false; channelError = ""; }}>{channelMode === "binding" ? "手动配置" : "扫码连接"}</button></div>{/if}
             {#if channelError}<p class="notice error" role="alert">{channelError}</p>{/if}
             </div>
-            <div class="modal-actions"><button class="secondary" disabled={savingChannel} on:click={closeChannel}>取消</button><button class="primary" disabled={busy || !!currentProvider?.supportsBinding && channelMode === "binding" && !channelConnected} on:click={() => saveChannel()}>保存</button></div>
+            <footer class="channel-footer">
+            {#if !currentProvider?.supportsBinding || channelMode === "manual" || channelConnected}
+            <fieldset class="subscriptions"><legend>提醒内容</legend><div class="subscription-options">{#each events as event}<label><input type="checkbox" checked={channelEvents.includes(event.id)} on:change={() => toggleEvent(event.id)} />{event.label}</label>{/each}</div></fieldset>
+            {/if}
+            <div class="modal-actions">{#if currentProvider?.supportsBinding}<div class="channel-action-links"><button class="text-button" disabled={savingChannel} on:click={() => { channelMode = channelMode === "binding" ? "manual" : "binding"; channelRebindOnMount = channelMode === "binding"; channelBinding = null; channelConnected = false; channelError = ""; }}>{channelMode === "binding" ? "手动配置" : "扫码连接"}</button>{#if channelMode === "binding" && channelConnected}<button class="text-button" disabled={savingChannel} on:click={() => channelBindingEditor.restart()}>重新扫码</button>{/if}</div>{/if}<button class="secondary" disabled={savingChannel} on:click={closeChannel}>取消</button><button class="primary" disabled={busy || channelFirstMessagePending || !!currentProvider?.supportsBinding && channelMode === "binding" && (!channelConnected || !channelSelectedTargets.length)} on:click={() => saveChannel()}>保存</button></div>
+            </footer>
           </dialog>
       {/if}
     {#if selectedProduct}
@@ -1336,19 +1360,22 @@
   .icon-button { display: inline-grid; width: 32px; height: 32px; place-items: center; padding: 0; border: 0; border-radius: 5px; color: var(--muted); background: transparent; }
   .icon-button:hover { background: var(--subtle); color: var(--foreground); }
   .channel-modal, .proxy-modal { width: min(520px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow: hidden; padding: 22px; border: 1px solid var(--border); border-radius: 7px; color: var(--foreground); background: var(--surface); box-shadow: 0 24px 60px rgb(0 0 0 / 45%); }
-  .channel-modal { width: min(460px, calc(100vw - 32px)); }
+  .channel-modal { width: min(520px, calc(100vw - 32px)); height: min(500px, calc(100dvh - 32px)); box-sizing: border-box; }
+  .channel-modal.configured { height: min(650px, calc(100dvh - 32px)); }
   .proxy-modal { height: min(460px, calc(100dvh - 32px)); }
   .channel-modal[open], .proxy-modal[open] { display: flex; flex-direction: column; }
   .channel-modal > .section-heading, .proxy-modal > .section-heading { flex: none; }
   .modal-body { min-height: 0; flex: 1; overflow-y: auto; padding: 4px 5px; }
-  .channel-modal .modal-body { flex: 0 1 auto; }
+  .channel-modal .modal-body { flex: 1; }
   .channel-modal::backdrop, .proxy-modal::backdrop { background: var(--modal-backdrop); }
   .channel-modal .modal-body > .field { margin: 12px 0; }
   .channel-modal .section-heading { margin-bottom: 14px; }
-  .channel-manual-tools { text-align: right; margin: 4px 0 12px; }
-  .channel-manual-tools button { font-size: 12px; }
+  .channel-action-links { display: flex; align-items: center; gap: 12px; margin-right: auto; }
+  .channel-action-links button { font-size: 12px; }
   .channel-modal .link-row { padding: 8px 0; border-bottom: 0; font-size: 12px; }
-  .subscriptions { gap: 8px 14px; margin: 20px 0 12px; padding: 0; border: 0; }
+  .channel-footer { flex: none; }
+  .subscriptions { display: block; min-width: 0; margin: 12px 0 0; padding: 0 5px; border: 0; }
+  .subscription-options { display: flex; flex-wrap: wrap; gap: 8px 14px; }
   .subscriptions legend { margin-bottom: 10px; padding: 0; font-size: 13px; font-weight: 550; }
   .subscriptions label { display: inline-flex; align-items: center; gap: 6px; }
   .modal-actions { display: flex; flex: none; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--hairline); }

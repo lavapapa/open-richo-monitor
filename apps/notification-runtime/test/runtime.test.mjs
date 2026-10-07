@@ -7,6 +7,7 @@ import https from 'node:https';
 import axios from 'axios';
 import { WebSocketServer } from 'ws';
 import { WSClient as OfficialWecomWSClient } from '@wecom/aibot-node-sdk';
+import { DWClient as OfficialDingTalkClient, TOPIC_ROBOT } from 'dingtalk-stream';
 import { Runtime, run } from '../src/main.mjs';
 
 test('shutdown RPC 返回响应后释放输入流，父进程无需再发送 EOF', async () => {
@@ -90,13 +91,15 @@ test('飞书绑定向 SDK 传出二维码后返回 Core 可保存的凭据', asy
     register: async (value) => {
       options = value;
       value.onQRCodeReady({ url: 'https://accounts.feishu.cn/qr', expireIn: 600 });
-      return { client_id: 'cli-id', client_secret: 'app-secret' };
+      return { client_id: 'cli-id', client_secret: 'app-secret', user_info: { open_id: 'ou_owner', tenant_brand: 'feishu' } };
     },
   });
   await runtime.call('begin_binding', { provider: 'feishu', bindingId: 'feishu-1' });
   for (let i = 0; i < 100 && runtime.bindings.get('feishu-1').status !== 'complete'; i += 1) await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(options.createOnly, true);
-  assert.deepEqual((await runtime.call('binding_status', { bindingId: 'feishu-1' })).credentials, { appId: 'cli-id', appSecret: 'app-secret' });
+  assert.ok(options.addons.scopes.tenant.includes('im:chat.access_event.bot_p2p_chat:read'));
+  assert.ok(options.addons.events.items.tenant.includes('im.chat.access_event.bot_p2p_chat_entered_v1'));
+  assert.deepEqual((await runtime.call('binding_status', { bindingId: 'feishu-1' })).credentials, { appId: 'cli-id', appSecret: 'app-secret', domain: 'feishu', userOpenId: 'ou_owner', botUrl: 'https://applink.feishu.cn/client/bot/open?appId=cli-id' });
   assert.equal(JSON.stringify(events).includes('app-secret'), false);
   await runtime.close();
 });
@@ -134,7 +137,7 @@ test('configure 复用飞书连接并将 chat 目标映射到 chat_id 发送', a
 
 test('飞书官方机器人名称在扫码完成状态公开，凭据保持私有', async () => {
   const events = [];
-  class FakeClient { async request(request) { assert.equal(request.url, '/open-apis/bot/v3/info'); return { bot: { app_name: '理光库存助手' } }; } }
+  class FakeClient { async request(request) { assert.equal(request.url, 'https://open.feishu.cn/open-apis/bot/v3/info/'); return { code: 0, bot: { app_name: '理光库存助手' } }; } }
   class FakeWs { constructor(options) { this.options = options; } start() { this.options.onReady(); } close() {} getConnectionStatus() { return { state: 'connected' }; } }
   class FakeDispatcher { register() { return this; } }
   const runtime = new Runtime({ emit: (event) => events.push(event), sdk: { FeishuClient: FakeClient, FeishuWSClient: FakeWs, FeishuEventDispatcher: FakeDispatcher } });
@@ -155,6 +158,7 @@ test('微信 iLink 轮询上报游标与新的上下文凭据，不输出令牌'
   const runtime = new Runtime({
     emit: (event) => events.push(event),
     fetchImpl: async (_input, options) => {
+      if (String(_input).includes('notifystart') || String(_input).includes('notifystop')) return Response.json({ ret: 0 });
       calls += 1;
       if (calls === 1) return Response.json({ get_updates_buf: 'cursor-2', msgs: [{ from_user_id: 'user-1', context_token: 'context-secret' }] });
       await new Promise((resolve) => options.signal.addEventListener('abort', resolve, { once: true }));
@@ -247,6 +251,7 @@ test('凭据字段顺序变化及反复配置不会重建连接', async () => {
 test('微信默认值和运行中游标更新不触发重连，旧配置保留最新上下文', async () => {
   let calls = 0;
   const runtime = new Runtime({ emit: () => {}, fetchImpl: async (_input, options) => {
+    if (String(_input).includes('notifystart') || String(_input).includes('notifystop')) return Response.json({ ret: 0 });
     calls += 1;
     if (calls === 1) return Response.json({ get_updates_buf: 'fresh-cursor', msgs: [{ from_user_id: 'user', context_token: 'fresh-context' }] });
     await new Promise((resolve) => options.signal.addEventListener('abort', resolve, { once: true }));
@@ -393,13 +398,16 @@ test('企微 SDK 的重连耗尽会被外层监督器重启，认证耗尽则停
   }
   const runtime = new Runtime({ emit: () => {}, sdk: { WecomWSClient: FakeWecom } });
   await runtime.call('configure', { accounts: [{ id: 'wxwork', provider: 'wecom', credentials: { botId: 'id', secret: 's' }, targets: [], enabled: true }] });
-  clients[0].emit('error', Object.assign(new Error('auth'), { name: 'WSAuthFailureError' }));
-  assert.equal(runtime.accounts.get('wxwork').status, 'auth_required');
   clients[0].emit('error', Object.assign(new Error('network'), { name: 'WSReconnectExhaustedError' }));
   assert.equal(runtime.accounts.get('wxwork').status, 'failed');
   runtime.accounts.get('wxwork').retryAt = Date.now() - 1;
   await runtime.restartAccount(runtime.accounts.get('wxwork'));
   assert.equal(clients.length, 2);
+  clients[1].emit('error', Object.assign(new Error('auth'), { name: 'WSAuthFailureError' }));
+  assert.equal(runtime.accounts.get('wxwork').status, 'auth_required');
+  clients[1].emit('error', Object.assign(new Error('network'), { name: 'WSReconnectExhaustedError' }));
+  assert.equal(runtime.accounts.get('wxwork').status, 'auth_required');
+  assert.equal(runtime.accounts.get('wxwork').supervisor, undefined);
   await runtime.close();
 });
 
@@ -518,6 +526,108 @@ test('钉钉在 WebSocket 尚未连接时保持 connecting，连接后立即 rea
   }
 });
 
+test('钉钉官方扫码只返回应用凭据时查询本应用名称，名称查询拒绝仍保留机器人入口', async (t) => {
+  for (const denied of [false, true]) await t.test(denied ? '元信息查询拒绝' : '元信息返回真实应用名称', async () => {
+    const events = [];
+    const paths = [];
+    class FakeDingTalk extends EventEmitter {
+      constructor() { super(); this.connected = true; }
+      registerCallbackListener() {}
+      async connect() {}
+      disconnect() { this.connected = false; }
+    }
+    const runtime = new Runtime({ emit: (event) => events.push(event), sleepImpl: async () => {}, sdk: { DWClient: FakeDingTalk }, fetchImpl: async (url, options) => {
+      const path = new URL(url).pathname;
+      paths.push(path);
+      if (path === '/app/registration/init') return Response.json({ errcode: 0, nonce: 'local-nonce' });
+      if (path === '/app/registration/begin') return Response.json({ errcode: 0, device_code: 'local-device', verification_uri_complete: 'https://open-dev.dingtalk.com/openapp/registration/openClaw', expires_in: 7200, interval: 3 });
+      if (path === '/app/registration/poll') return Response.json({ errcode: 0, status: 'SUCCESS', client_id: 'local-client', client_secret: 'local-secret' });
+      if (path === '/v1.0/oauth2/accessToken') return Response.json({ accessToken: 'local-token', expireIn: 7200 });
+      assert.equal(path, '/v1.0/microApp/app/detail');
+      assert.equal(options.headers['x-acs-dingtalk-access-token'], 'local-token');
+      return denied ? Response.json({ code: 'Forbidden' }, { status: 403 }) : Response.json({ name: '授权创建的应用名称', homepageLink: 'https://example.invalid/homepage' });
+    } });
+    try {
+      await runtime.beginBinding({ provider: 'dingtalk', bindingId: 'dt-name' });
+      for (let i = 0; i < 100 && paths.length < 5; i += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+      const binding = runtime.bindingStatus('dt-name');
+      assert.equal(binding.status, 'complete');
+      assert.equal(binding.botUrl, 'https://open-dev.dingtalk.com/fe/app#/corp/robot');
+      assert.equal(binding.botName, undefined);
+      assert.equal(binding.appName, denied ? undefined : '授权创建的应用名称');
+      assert.deepEqual(binding.targets, []);
+      assert.equal(paths.filter((path) => path === '/v1.0/microApp/app/detail').length, 1);
+      assert.equal(JSON.stringify(events).includes('local-secret'), false);
+      assert.equal(JSON.stringify(events).includes('local-token'), false);
+      assert.equal(JSON.stringify(events).includes('example.invalid'), false);
+    } finally { await runtime.close(); }
+  });
+});
+
+test('官方钉钉 SDK 从本地 Stream 回调发现绑定个人目标', { timeout: 5_000 }, async () => {
+  const server = new WebSocketServer({ port: 0, host: '127.0.0.1' });
+  await once(server, 'listening');
+  class LocalDingTalk extends OfficialDingTalkClient {
+    async getEndpoint() { this.dw_url = `ws://127.0.0.1:${server.address().port}`; }
+  }
+  const runtime = new Runtime({ emit: () => {}, sdk: { DWClient: LocalDingTalk } });
+  const binding = { id: 'dt-official', provider: 'dingtalk', status: 'complete', controller: new AbortController(), credentials: { appId: 'local-app', appSecret: 'local-secret' }, targets: [] };
+  runtime.bindings.set(binding.id, binding);
+  let peer;
+  try {
+    const accepted = once(server, 'connection');
+    await runtime.startProvisionalBinding(binding);
+    [peer] = await accepted;
+    const account = runtime.accounts.get(binding.id);
+    if (!account.client.connected) await once(account.client.socket, 'open');
+    runtime.syncAccountStatus(account);
+    // 采用 SDK 实际订阅的 topic，验证标准回调信封与 JSON 字符串消息。
+    const topic = account.client.config.subscriptions.find((item) => item.type === 'CALLBACK').topic;
+    assert.equal(topic, TOPIC_ROBOT);
+    const discovered = once(runtime.accountChanges, `account:${binding.id}`);
+    peer.send(JSON.stringify({ type: 'CALLBACK', headers: { topic: TOPIC_ROBOT, messageId: 'local-message' }, data: JSON.stringify({ conversationType: '1', senderStaffId: 'staff-1', senderId: '$:LWCP_v1:$opaque', senderNick: '成员' }) }));
+    await discovered;
+    assert.deepEqual(runtime.bindingStatus(binding.id).targets, [{ id: 'staff-1', kind: 'user', label: '成员' }]);
+  } finally {
+    await runtime.close();
+    peer?.terminate();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test('钉钉扫码授权与连接分开，私信缺少员工 ID 时明确说明并在有效回调后恢复', async () => {
+  let callback;
+  let client;
+  class FakeDingTalk extends EventEmitter {
+    constructor() { super(); client = this; this.connected = false; }
+    registerCallbackListener(_topic, handler) { callback = handler; }
+    async connect() {}
+    disconnect() { this.connected = false; }
+    socketCallBackResponse() {}
+  }
+  const runtime = new Runtime({ emit: () => {}, sdk: { DWClient: FakeDingTalk } });
+  const binding = { id: 'dt-binding', provider: 'dingtalk', status: 'complete', controller: new AbortController(), credentials: { appId: 'id', appSecret: 's' }, targets: [] };
+  runtime.bindings.set(binding.id, binding);
+  try {
+    await runtime.startProvisionalBinding(binding);
+    assert.equal(runtime.bindingStatus(binding.id).connectionStatus, 'connecting');
+    client.connected = true;
+    runtime.syncAccountStatus(runtime.accounts.get(binding.id));
+    assert.equal(runtime.bindingStatus(binding.id).connectionStatus, 'ready');
+    callback({ headers: { messageId: 'local-message' }, data: JSON.stringify({ conversationType: '1', senderId: '$:LWCP_v1:$opaque', senderNick: '成员' }) });
+    const missing = runtime.bindingStatus(binding.id);
+    assert.deepEqual(missing.targets, []);
+    assert.equal(missing.message, 'dingtalk_missing_staff_id');
+    callback({ headers: {}, data: JSON.stringify({ conversationType: '1', senderStaffId: 'staff-1', senderId: '$:LWCP_v1:$opaque', senderNick: '成员' }) });
+    const recovered = runtime.bindingStatus(binding.id);
+    assert.equal(recovered.message, undefined);
+    assert.deepEqual(recovered.targets, [{ id: 'staff-1', kind: 'user', label: '成员' }]);
+    client.connected = false;
+    runtime.syncAccountStatus(runtime.accounts.get(binding.id));
+    assert.equal(runtime.bindingStatus(binding.id).connectionStatus, 'reconnecting');
+  } finally { await runtime.close(); }
+});
+
 test('钉钉回调优先使用 senderStaffId，且数字 conversationType 识别为群', async () => {
   let callback;
   class FakeDingTalk extends EventEmitter {
@@ -576,6 +686,7 @@ test('官方 SDK 请求在退出、停用和取消临时绑定后释放代理连
         return configured;
       };
       if (provider === 'feishu-ws') {
+        runtime.sdk.FeishuClient = class { async request() { return { code: 0, bot: { app_name: 'fixture' } }; } };
         const OfficialWs = runtime.sdk.FeishuWSClient;
         runtime.sdk.FeishuWSClient = class extends OfficialWs {
           constructor(options) { assert.equal(options.httpInstance, runtime.httpInstance); super(options); }
@@ -606,7 +717,10 @@ test('官方 SDK 请求在退出、停用和取消临时绑定后释放代理连
           void runtime.startProvisionalBinding(binding);
         }
         if (provider === 'feishu') pendingSend = runtime.send({ accountId: account.id, target: { id: 'fixture-chat', kind: 'chat' }, text: 'fixture' });
-        if (provider === 'feishu-groups') pendingGroups = (action === '取消临时绑定' ? runtime.detectBindingGroups(account.id) : runtime.detectGroups(account.id)).then(() => 'completed', () => 'cancelled');
+        if (provider === 'feishu-groups') {
+          for (let i = 0; i < 50 && runtime.accounts.get(account.id).status !== 'ready'; i += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+          pendingGroups = (action === '取消临时绑定' ? runtime.detectBindingGroups(account.id) : runtime.detectGroups(account.id)).then(() => 'completed', () => 'cancelled');
+        }
         const [request, socket] = await connected;
         assert.equal(request.url, provider === 'dingtalk' ? 'api.dingtalk.com:443' : provider === 'wecom' ? 'openws.work.weixin.qq.com:443' : 'open.feishu.cn:443');
         if (provider === 'feishu-ws') assert.equal(endpointRequested, true);
@@ -651,8 +765,7 @@ test('官方飞书 SDK 通过注入 Axios adapter 保持响应解包契约', asy
   class FakeWs { constructor(options) { this.options = options; } start() { this.options.onReady(); } close() {} getConnectionStatus() { return { state: 'connected' }; } }
   class FakeDispatcher { register() { return this; } }
   const runtime = new Runtime({ emit: () => {}, sdk: { FeishuWSClient: FakeWs, FeishuEventDispatcher: FakeDispatcher } });
-  await runtime.call('configure', { accounts: [{ id: 'official-feishu', provider: 'feishu', credentials: { appId: 'cli_test', appSecret: 'secret' }, targets: [], enabled: true }] });
-  runtime.httpInstance.defaults.adapter = async (config) => {
+  const adapter = async (config) => {
     requests.push(config);
     if (holdSend && config.url.endsWith('/open-apis/im/v1/messages')) return new Promise((_resolve, reject) => {
       pendingSignal = config.signal;
@@ -663,10 +776,16 @@ test('官方飞书 SDK 通过注入 Axios adapter 保持响应解包契约', asy
       ? { code: 0, tenant_access_token: 'token', expire: 7200 }
       : config.url.endsWith('/open-apis/im/v1/chats')
         ? { code: 0, data: { has_more: false, items: [{ chat_id: 'oc_group', name: '群组', chat_mode: 'group' }] } }
+        : config.url.includes('/bot/v3/info') ? { code: 0, bot: { app_name: 'fixture' } }
         : { code: 0, data: { message_id: 'om_sent' } };
     return { data, status: 200, statusText: 'OK', headers: {}, config };
   };
-  await new Promise((resolve) => setTimeout(resolve, 0));
+  const OfficialClient = runtime.sdk.FeishuClient;
+  runtime.sdk.FeishuClient = class extends OfficialClient {
+    constructor(options) { options.httpInstance.defaults.adapter = adapter; super(options); }
+  };
+  await runtime.call('configure', { accounts: [{ id: 'official-feishu', provider: 'feishu', credentials: { appId: 'cli_test', appSecret: 'secret' }, targets: [], enabled: true }] });
+  for (let i = 0; i < 100 && runtime.accounts.get('official-feishu').status === 'connecting'; i += 1) await new Promise((resolve) => setTimeout(resolve, 1));
   assert.deepEqual(await runtime.call('detect_groups', { accountId: 'official-feishu' }), { targets: [{ id: 'oc_group', kind: 'chat', label: '群组' }] });
   assert.deepEqual(await runtime.call('send', { accountId: 'official-feishu', target: { id: 'oc_group', kind: 'chat' }, text: '库存更新' }), { outcome: 'accepted', message: '平台已接受' });
   assert.equal(requests.some((request) => request.url.endsWith('/open-apis/im/v1/chats')), true);
@@ -704,7 +823,7 @@ test('微信 iLink 业务层凭据失效停止轮询，其他拒绝响应进入�
 
   const retryRuntime = new Runtime({
     emit: () => {},
-    fetchImpl: async () => { fetches += 1; return Response.json({ errcode: 7 }); },
+    fetchImpl: async (input) => { if (String(input).includes('notifystart') || String(input).includes('notifystop')) return Response.json({ ret: 0 }); fetches += 1; return Response.json({ errcode: 7 }); },
     sleepImpl: (_ms, signal) => new Promise((resolve, reject) => {
       sleeps += 1;
       signal.addEventListener('abort', () => reject(signal.reason), { once: true });

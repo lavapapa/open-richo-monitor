@@ -6,7 +6,7 @@
   export let target: ChannelTarget;
   export let index = 0;
   export let delivery: ChannelDelivery | null = null;
-  $: label = target.label && (target.kind === "user" || target.label !== target.id) ? target.label : target.kind === "user" ? `个人 ${index + 1}` : "群聊";
+  $: label = target.kind === "user" && target.label === "绑定账号" ? "创建人" : target.label && (target.kind === "user" || target.label !== target.id) ? target.label : target.kind === "user" ? `个人 ${index + 1}` : "群聊";
   $: description = `${target.kind === "user" ? "私聊" : "群聊"}：${label}${delivery ? ` · ${delivery.outcome === "accepted" ? "已发送" : delivery.outcome === "failed" ? "投递失败" : "结果未知"}${delivery.message ? ` · ${delivery.message}` : ""}` : ""}`;
 </script>
 

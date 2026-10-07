@@ -28,6 +28,12 @@ pub(super) fn initialize(conn: &Connection) -> Result<(), StorageError> {
             COALESCE((SELECT MAX(request_sequence) FROM events), 0)
         ) WHERE id=1;",
     )?;
+    if !super::column_exists(conn, "monitoring_health", "failure_count")? {
+        conn.execute(
+            "ALTER TABLE monitoring_health ADD COLUMN failure_count INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
     Ok(())
 }
 
@@ -100,15 +106,20 @@ impl Storage {
         )?;
         let updated = self.conn.execute(
             "INSERT INTO monitoring_health
-             (product_key,generation,request_sequence,failed_since_ms,active_failure_ms,failure_reported,last_error)
-             VALUES (?1,?2,?3,?4,?5,?6,?7)
+             (product_key,generation,request_sequence,failed_since_ms,active_failure_ms,failure_reported,last_error,failure_count)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,CASE WHEN ?4 IS NULL THEN 0 ELSE 1 END)
              ON CONFLICT(product_key) DO UPDATE SET
                generation=excluded.generation,
                request_sequence=excluded.request_sequence,
                failed_since_ms=excluded.failed_since_ms,
                active_failure_ms=excluded.active_failure_ms,
                failure_reported=excluded.failure_reported,
-               last_error=excluded.last_error
+               last_error=excluded.last_error,
+               failure_count=CASE WHEN excluded.failed_since_ms IS NULL THEN 0
+                   WHEN excluded.generation=monitoring_health.generation
+                     AND excluded.failed_since_ms IS monitoring_health.failed_since_ms
+                   THEN MIN(monitoring_health.failure_count+1,9223372036854775807)
+                   ELSE 1 END
              WHERE excluded.generation > monitoring_health.generation
                 OR (excluded.generation = monitoring_health.generation
                     AND excluded.request_sequence > monitoring_health.request_sequence)",
@@ -121,6 +132,71 @@ impl Storage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failure_count_survives_reopen_ignores_duplicates_and_resets_after_success() {
+        let path = super::super::tests::TempDatabase::new();
+        let mut db = Storage::open(&path.0).unwrap();
+        db.set_onboarding_products(&[65, 66]).unwrap();
+        db.conn
+            .execute(
+                "UPDATE products SET verified_at_ms=1 WHERE product_key='65'",
+                [],
+            )
+            .unwrap();
+        let generation = db.product_generation("65").unwrap();
+        let failed = MonitoringHealth {
+            failed_since_ms: Some(100),
+            ..Default::default()
+        };
+        assert!(db
+            .record_monitoring_runtime("65", generation, 1, failed, Some("超时"))
+            .unwrap());
+        assert!(!db
+            .record_monitoring_runtime("65", generation, 1, failed, Some("超时"))
+            .unwrap());
+        let other_generation = db.product_generation("66").unwrap();
+        db.record_monitoring_runtime("66", other_generation, 2, failed, Some("超时"))
+            .unwrap();
+        drop(db);
+        let mut db = Storage::open(&path.0).unwrap();
+        let count = |db: &Storage, key: &str| {
+            db.conn
+                .query_row(
+                    "SELECT failure_count FROM monitoring_health WHERE product_key=?1",
+                    [key],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap()
+        };
+        assert_eq!(count(&db, "65"), 1);
+        db.record_monitoring_runtime("65", generation, 3, failed, Some("超时"))
+            .unwrap();
+        assert_eq!(count(&db, "65"), 2);
+        assert_eq!(count(&db, "66"), 1);
+        db.record_monitoring_runtime("65", generation, 4, MonitoringHealth::default(), None)
+            .unwrap();
+        assert_eq!(count(&db, "65"), 0);
+        db.record_monitoring_runtime(
+            "65",
+            generation,
+            5,
+            MonitoringHealth {
+                failed_since_ms: Some(200),
+                ..failed
+            },
+            Some("超时"),
+        )
+        .unwrap();
+        assert_eq!(count(&db, "65"), 1);
+        db.set_product_enabled("65", false).unwrap();
+        db.set_product_enabled("65", true).unwrap();
+        let generation = db.product_generation("65").unwrap();
+        db.record_monitoring_runtime("65", generation, 6, failed, Some("超时"))
+            .unwrap();
+        assert_eq!(count(&db, "65"), 1);
+        assert_eq!(count(&db, "66"), 1);
+    }
 
     #[test]
     fn failed_attempt_runtime_survives_reopen_and_round_reset_is_per_product() {

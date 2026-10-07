@@ -229,13 +229,12 @@ impl Scheduler {
             config.scan.interval,
             clock.clone(),
         ));
-        Self::new_with_gate(config, client, clock, jitter, gate)
+        Self::new_with_gate(config, client, jitter, gate)
     }
 
     pub fn new_with_gate(
         config: MonitorConfig,
         client: Arc<dyn SchedulerClient>,
-        clock: Arc<dyn SchedulerClock>,
         jitter: Arc<dyn JitterSource>,
         gate: Arc<RequestGate>,
     ) -> Result<Self, SchedulerError> {
@@ -247,7 +246,8 @@ impl Scheduler {
             schedule: config.schedule,
             polling: watch::channel((config.requests, config.failure_alert_after)).0,
             client,
-            clock,
+            // 截止时间与共享门控使用同一时钟域，暂停恢复后仍沿用 App 的起点。
+            clock: gate.clock.clone(),
             jitter,
             gate,
             next_sequence: Arc::new(AtomicU64::new(0)),
@@ -802,14 +802,18 @@ async fn read_list(
     scheduler: &Scheduler,
     window_end: Duration,
     control: &mut watch::Receiver<RunState>,
-) -> Result<BTreeMap<u64, ProductDetail>, RicohApiError> {
+) -> Result<Option<BTreeMap<u64, ProductDetail>>, RicohApiError> {
     let mut products = BTreeMap::new();
     for page in 1..=MAX_LIST_PAGES {
-        let permit = scheduler
+        let permit = match scheduler
             .gate
             .acquire(control, Some(window_end), false)
             .await
-            .map_err(|error| RicohApiError::Transport(error.to_string()))?;
+        {
+            Ok(permit) => permit,
+            // 计划结束或用户停止时丢弃未完整读取的列表，不计入网络失败。
+            Err(AcquireError::WindowEnded | AcquireError::Cancelled) => return Ok(None),
+        };
         let result = scheduler
             .client
             .product_page(outlet.to_owned(), page, LIST_PAGE_LIMIT)
@@ -820,7 +824,7 @@ async fn read_list(
         }
         let items = result?;
         if items.is_empty() {
-            return Ok(products);
+            return Ok(Some(products));
         }
         if items.len() > LIST_PAGE_LIMIT as usize {
             return Err(RicohApiError::Parse(
@@ -946,7 +950,11 @@ async fn run_list(
             _ = scheduler.clock.sleep_until(started_at.saturating_add(MAX_LIST_ROUND_TIME)) => {
                 Err(RicohApiError::Transport("上架列表整轮读取超过 60 秒，整轮结果未采用".into()))
             }
-            result = read_list(&outlet, &scheduler, window_end, &mut page_control) => result,
+            result = read_list(&outlet, &scheduler, window_end, &mut page_control) => match result {
+                Ok(Some(products)) => Ok(products),
+                Ok(None) => continue,
+                Err(error) => Err(error),
+            },
         };
         let completed_at = scheduler.clock.monotonic_now();
         let completed_at_ms = unix_time_ms(scheduler.clock.wall_now());

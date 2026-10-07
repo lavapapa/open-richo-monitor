@@ -174,17 +174,16 @@ fn forward_system_notifications(backend: Arc<DesktopBackend>, app: tauri::AppHan
                 break;
             }
             if tokio::time::Instant::now() >= permission_check {
-                let permission_update = match desktop_notifications::permission_state(&app).await {
-                    Ok(permission) => backend.set_notification_permission(permission).await,
-                    Err(error) => Err(error),
-                };
-                permission_readable = permission_update.is_ok();
+                let permission = desktop_notifications::permission_state(&app).await;
+                permission_readable = permission.is_ok();
+                let permission_update = backend.set_notification_permission(permission).await;
                 permission_check = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
                 if let Err(error) = permission_update {
                     desktop_backend::write_log(&backend.data_dir, &error);
                 }
             }
-            if !permission_readable || backend.notification_permission() != PermissionState::Granted
+            if !permission_readable
+                || backend.notification_permission() != Ok(PermissionState::Granted)
             {
                 tokio::select! {
                     _ = backend.app.wait_for_system_notification() => {},
@@ -268,6 +267,7 @@ pub fn run() {
             desktop_backend::end_channel_editing,
             desktop_backend::channel_binding_status,
             desktop_backend::cancel_channel_binding,
+            desktop_backend::submit_channel_binding_verification,
             desktop_backend::detect_notification_channel_groups,
             desktop_backend::detect_binding_groups,
             desktop_backend::save_notification_channel,
@@ -326,10 +326,16 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             desktop_notifications::install_foreground_delegate();
             let data_dir = app.path().app_data_dir().map_err(std::io::Error::other)?;
+            #[cfg(debug_assertions)]
+            let data_dir = std::env::var_os("RM_DEV_DATA_DIR")
+                .map(std::path::PathBuf::from)
+                .unwrap_or(data_dir);
             let backend = Arc::new(
                 DesktopBackend::open(data_dir, PermissionState::Prompt)
                     .map_err(std::io::Error::other)?,
             );
+            app.asset_protocol_scope()
+                .allow_directory(backend.data_dir.join("images"), false)?;
             #[cfg(any(
                 all(
                     target_os = "macos",

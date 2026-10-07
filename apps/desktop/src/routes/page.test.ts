@@ -55,7 +55,7 @@ function makeSnapshot(overrides: Partial<DesktopSnapshot> = {}): DesktopSnapshot
     products: [], catalog: [], channels: [], providers: [], proxies: [], scan: null,
     platform: {
       loginStartEnabled: false,
-      notificationPermission: "prompt", projectUrl: null, tutorialUrl: null, feedbackUrl: null,
+      notificationPermission: "prompt", notificationPermissionError: null, projectUrl: null, tutorialUrl: null, feedbackUrl: null,
     },
     recentEvents: [], recentChecks: [],
     ...overrides,
@@ -609,14 +609,14 @@ describe("桌面主流程", () => {
     current.products = [product];
     bridge.invoke.mockImplementation(async (name: string) => {
       if (name === "get_desktop_snapshot") return structuredClone(current);
-      if (name === "query_messages") return { items: [{ at: "2026-10-06T10:00:00+08:00", productId: "245", name: product.name, isShow: 1, stock: 5, detail: "库存增加 3 → 5" }], nextCursor: null };
+      if (name === "query_messages") return { items: [{ at: "2026-10-06T10:00:00+08:00", productId: "245", name: product.name, isShow: 1, stock: 5, detail: "补货 3 → 5" }], nextCursor: null };
       throw new Error(`Unexpected command: ${name}`);
     });
     render(Page);
     await screen.findByRole("button", { name: "开始监控" });
     await fireEvent.click(screen.getByRole("button", { name: "查看GR IV HDF详情" }));
     const drawer = await screen.findByRole("dialog", { name: "商品详情" });
-    await waitFor(() => expect(drawer.querySelector(".drawer-records span")?.textContent).toBe("库存增加 3 → 5"));
+    await waitFor(() => expect(drawer.querySelector(".drawer-records span")?.textContent).toBe("补货 3 → 5"));
     expect(tileSource).toMatch(/\.product-popover \{[^}]*pointer-events: none/);
   });
 
@@ -977,6 +977,78 @@ describe("桌面主流程", () => {
     await screen.findByText("权限：已允许");
   });
 
+  it("通知权限读取失败保持一处提示，普通状态推送不清除，真实恢复才清除", async () => {
+    const failure = "Windows 通知权限读取失败，请重新检查：找不到元素。(0x80070490)";
+    current.systemNotificationsEnabled = true;
+    current.platform!.notificationPermission = "unavailable";
+    current.platform!.notificationPermissionError = failure;
+    render(Page);
+    await screen.findByRole("button", { name: "开始监控" });
+    await fireEvent.click(screen.getByRole("button", { name: "通知" }));
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+    expect(screen.getByRole("alert").textContent).toContain(failure);
+    expect(screen.getByText("权限：暂时无法读取")).toBeTruthy();
+    expect(screen.queryByText("权限：首次发送时询问")).toBeNull();
+    await waitFor(() => expect(bridge.eventHandler).not.toBeNull());
+    bridge.eventHandler!({ payload: structuredClone(current) });
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain(failure));
+    current.platform!.notificationPermission = "granted";
+    current.platform!.notificationPermissionError = null;
+    bridge.eventHandler!({ payload: structuredClone(current) });
+    await screen.findByText("权限：已允许");
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("手动检查权限失败时不同时显示同一个错误横幅和浮动提示", async () => {
+    const failure = "Windows 通知权限读取失败，请重新检查：找不到元素。(0x80070490)";
+    current.systemNotificationsEnabled = true;
+    current.platform!.notificationPermission = "unavailable";
+    current.platform!.notificationPermissionError = failure;
+    const invoke = bridge.invoke.getMockImplementation()!;
+    bridge.invoke.mockImplementation(async (name: string, args?: Record<string, any>) => {
+      if (name === "refresh_notification_permission") throw failure;
+      return invoke(name, args);
+    });
+    render(Page);
+    await screen.findByRole("button", { name: "开始监控" });
+    await fireEvent.click(screen.getByRole("button", { name: "通知" }));
+    await fireEvent.click(screen.getByRole("button", { name: "检查权限" }));
+    await waitFor(() => {
+      expect(screen.getAllByRole("alert")).toHaveLength(1);
+      expect(screen.getByRole("alert").textContent).toContain(failure);
+    });
+    current.platform!.notificationPermission = "granted";
+    current.platform!.notificationPermissionError = null;
+    bridge.eventHandler!({ payload: structuredClone(current) });
+    await screen.findByText("权限：已允许");
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("手动检查首次读取失败、最终读取恢复后不再弹出已过时的错误", async () => {
+    const failure = "Windows 通知权限读取失败，请重新检查：找不到元素。(0x80070490)";
+    current.systemNotificationsEnabled = true;
+    current.platform!.notificationPermission = "unavailable";
+    current.platform!.notificationPermissionError = failure;
+    const invoke = bridge.invoke.getMockImplementation()!;
+    bridge.invoke.mockImplementation(async (name: string, args?: Record<string, any>) => {
+      if (name === "refresh_notification_permission") {
+        current.platform!.notificationPermission = "granted";
+        current.platform!.notificationPermissionError = null;
+        throw failure;
+      }
+      return invoke(name, args);
+    });
+    render(Page);
+    await screen.findByRole("button", { name: "开始监控" });
+    await fireEvent.click(screen.getByRole("button", { name: "通知" }));
+    await fireEvent.click(screen.getByRole("button", { name: "检查权限" }));
+    await screen.findByText("权限：已允许");
+    await waitFor(() => {
+      expect((screen.getByRole("button", { name: "检查权限" }) as HTMLButtonElement).disabled).toBe(false);
+      expect(screen.queryByRole("alert")).toBeNull();
+    });
+  });
+
   it("首次引导在完成前保持未完成状态，重开界面仍进入商品选择", async () => {
     current.setupCompleted = false;
     current.systemNotificationsEnabled = true;
@@ -1108,10 +1180,10 @@ describe("桌面主流程", () => {
     expect(screen.getAllByText("RichoMonitor").length).toBeGreaterThan(0);
   });
 
-  it("成功检查后设置页显示当前已是最新版本", async () => {
+  it("成功检查后设置页显示暂未发现更新", async () => {
     render(Page);
     await fireEvent.click(screen.getByRole("button", { name: "其他设置" }));
-    expect(await screen.findByText("当前已是最新版本。")).toBeTruthy();
+    expect(await screen.findByText("暂未发现更新。")).toBeTruthy();
   });
 
   it("主页更新事件同步到设置页，安装防重并在退出时释放订阅", async () => {
@@ -1342,6 +1414,7 @@ describe("桌面主流程", () => {
     await screen.findByRole("heading", { name: /设置通知/ });
     await fireEvent.click(screen.getByRole("button", { name: "添加飞书" }));
     const dialog = screen.getByRole("dialog", { name: "添加飞书" });
+    expect(within(dialog).getByRole("group", { name: "提醒内容" }).parentElement?.classList.contains("channel-footer")).toBe(true);
     await fireEvent.input(within(dialog).getByLabelText("渠道名称"), { target: { value: "摄影值班群" } });
     await fireEvent.input(within(dialog).getByLabelText("应用 ID"), { target: { value: "fixture-app" } });
     await fireEvent.click(within(dialog).getByRole("button", { name: "保存" }));
@@ -1377,7 +1450,7 @@ describe("桌面主流程", () => {
     await screen.findByRole("button", { name: "开始监控" });
     await fireEvent.click(screen.getByRole("button", { name: "通知" }));
 
-    expect(document.querySelector('[title*="最近投递：已发送 · 商品上架或库存增加 · 9/29 08:00"]')).toBeTruthy();
+    expect(document.querySelector('[title*="最近投递：已发送 · 商品上架或补货 · 9/29 08:00"]')).toBeTruthy();
     expect(screen.queryByText(/不代表用户已读/)).toBeNull();
     expect(screen.queryByText("服务已接受通知")).toBeNull();
   });
@@ -1627,7 +1700,7 @@ describe("桌面主流程", () => {
     expect(screen.queryByRole("radio")).toBeNull();
     expect(screen.getByLabelText("应用 ID")).toBeTruthy();
     expect(screen.getByLabelText("渠道名称")).toBeTruthy();
-    for (const label of ["商品上架或库存增加", "监控异常", "监控恢复"]) expect(screen.getByLabelText(label)).toBeTruthy();
+    for (const label of ["商品上架或补货", "监控异常", "监控恢复"]) expect(screen.getByLabelText(label)).toBeTruthy();
     await fireEvent.click(screen.getByRole("button", { name: "关闭" }));
     expect(screen.queryByRole("dialog")).toBeNull();
   });
@@ -1803,7 +1876,7 @@ describe("桌面主流程", () => {
     bridge.invoke.mockImplementation(async (name: string, args?: Record<string, any>) => {
       if (name === "get_desktop_snapshot") return structuredClone(current);
       if (name === "query_messages") return messagePage(args!.query!);
-      if (name === "begin_channel_binding") return { id: "binding-1", provider: "feishu", status: "complete", targets: [{ id: "chat-1", kind: "chat", label: "摄影群" }, { id: "user-1", kind: "user", label: "我的账号" }] };
+      if (name === "begin_channel_binding") return { id: "binding-1", provider: "feishu", status: "complete", connectionStatus: "ready", targets: [{ id: "chat-1", kind: "chat", label: "摄影群" }, { id: "user-1", kind: "user", label: "我的账号" }] };
       if (name === "detect_binding_groups") return [{ id: "chat-1", kind: "chat", label: "摄影群" }, { id: "chat-2", kind: "chat", label: "库存群" }];
       if (name === "save_notification_channel") {
         const saved = { ...channel, id: "saved-channel", name: args!.channel.name, enabled: false, connectionStatus: "ready" };
@@ -1883,7 +1956,7 @@ describe("桌面主流程", () => {
     bridge.invoke.mockImplementation(async (name: string, args?: Record<string, any>) => {
       if (name === "get_desktop_snapshot") return structuredClone(current);
       if (name === "query_messages") return messagePage(args!.query!);
-      if (name === "begin_channel_binding") return { id: "binding-1", provider: "feishu", status: "complete", targets: [{ id: "my-user", kind: "user", label: "我的账号" }] };
+      if (name === "begin_channel_binding") return { id: "binding-1", provider: "feishu", status: "complete", connectionStatus: "ready", targets: [{ id: "my-user", kind: "user", label: "我的账号" }] };
       if (name === "save_notification_channel") return { ...channel, id: "saved-channel", enabled: false };
       if (name === "test_notification_channel") return { outcome, message: "平台返回说明" };
       if (name === "set_notification_channel_enabled" || name === "cancel_channel_binding") return { message: null };
@@ -1906,6 +1979,59 @@ describe("桌面主流程", () => {
       expect(bridge.invoke).not.toHaveBeenCalledWith("set_notification_channel_enabled", expect.anything());
     }
     expect(bridge.invoke).toHaveBeenCalledWith("save_notification_channel", { channel: expect.objectContaining({ providerId: "feishu", bindingId: "binding-1", targets: [{ id: "my-user", kind: "user", label: "我的账号" }] }) });
+  });
+
+  it.each([["weixin", "微信"], ["wecom", "企业微信"], ["dingtalk", "钉钉"], ["feishu", "飞书"]])("%s 授权后继续引导初始化，识别会话后才能保存", async (providerId, providerName) => {
+    current.providers = [{ id: providerId, name: providerName, supportsBinding: true, documentationUrl: null, fields: [] }];
+    let privateMessageReceived = false;
+    bridge.invoke.mockImplementation(async (name: string, args?: Record<string, any>) => {
+      if (name === "get_desktop_snapshot") return structuredClone(current);
+      if (name === "query_messages") return messagePage(args!.query!);
+      if (["begin_channel_binding", "channel_binding_status"].includes(name)) return { id: "wx-binding", provider: providerId, status: "complete", connectionStatus: "ready", privateMessageReceived: providerId === "feishu" ? false : privateMessageReceived, privateChatReady: privateMessageReceived, targets: [{ id: "owner", kind: "user", label: "绑定账号" }] };
+      if (name === "cancel_channel_binding") return { message: null };
+      throw new Error(`Unexpected command: ${name}`);
+    });
+    render(Page);
+    await screen.findByRole("button", { name: "开始监控" });
+    await fireEvent.click(screen.getByRole("button", { name: "通知" }));
+    await fireEvent.click(screen.getByRole("button", { name: `添加${providerName}` }));
+    const dialog = screen.getByRole("dialog", { name: `添加${providerName}` });
+    await screen.findByText("创建人");
+    expect(!!screen.queryByRole("checkbox", { name: "创建人 个人" })).toBe(providerId !== "weixin");
+    expect(dialog.classList.contains("configured")).toBe(providerId !== "weixin");
+    const subscriptions = screen.getByRole("group", { name: "提醒内容" });
+    expect(subscriptions.parentElement?.classList.contains("channel-footer")).toBe(true);
+    expect(subscriptions.parentElement?.parentElement).toBe(dialog);
+    expect(subscriptions.nextElementSibling?.classList.contains("modal-actions")).toBe(true);
+    expect((screen.getByRole("button", { name: "保存" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText(providerId === "feishu" ? "请打开机器人应用，再返回保存" : "请向机器人发送任意私信，再返回保存")).toBeTruthy();
+    privateMessageReceived = true;
+    await waitFor(() => expect((screen.getByRole("button", { name: "保存" }) as HTMLButtonElement).disabled).toBe(false), { timeout: 3500 });
+    expect(dialog.classList.contains("configured")).toBe(providerId !== "weixin");
+    expect(screen.getByText(providerId === "feishu" ? "配对成功" : "已收到私信，配对成功")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "重新扫码" }).closest(".modal-actions")).toBeTruthy();
+    expect(bridge.invoke.mock.calls.filter(([name]) => name === "begin_channel_binding")).toHaveLength(1);
+  });
+
+  it.each([["wecom", "企业微信"], ["dingtalk", "钉钉"], ["feishu", "飞书"]])("%s 可选择只往群聊发送，保存不要求初始化个人会话", async (providerId, providerName) => {
+    current.providers = [{ id: providerId, name: providerName, supportsBinding: true, documentationUrl: null, fields: [] }];
+    bridge.invoke.mockImplementation(async (name: string, args?: Record<string, any>) => {
+      if (name === "get_desktop_snapshot") return structuredClone(current);
+      if (name === "query_messages") return messagePage(args!.query!);
+      if (["begin_channel_binding", "channel_binding_status"].includes(name)) return { id: "group-binding", provider: providerId, status: "complete", connectionStatus: "ready", privateMessageReceived: false, privateChatReady: false, targets: [{ id: "owner", kind: "user", label: "绑定账号" }, { id: "group", kind: "chat", label: "测试群" }] };
+      if (name === "cancel_channel_binding") return { message: null };
+      throw new Error(`Unexpected command: ${name}`);
+    });
+    render(Page);
+    await screen.findByRole("button", { name: "开始监控" });
+    await fireEvent.click(screen.getByRole("button", { name: "通知" }));
+    await fireEvent.click(screen.getByRole("button", { name: `添加${providerName}` }));
+    await screen.findByRole("checkbox", { name: "创建人 个人" });
+    expect((screen.getByRole("button", { name: "保存" }) as HTMLButtonElement).disabled).toBe(true);
+    await fireEvent.click(screen.getByRole("checkbox", { name: "创建人 个人" }));
+    await fireEvent.click(screen.getByRole("checkbox", { name: "测试群 群聊" }));
+    expect((screen.getByRole("button", { name: "保存" }) as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.getByText("群聊已选择，可以保存")).toBeTruthy();
   });
 
   it("重跑引导仅保存启动偏好，当前监控保持原样", async () => {
@@ -1966,10 +2092,10 @@ describe("桌面主流程", () => {
     expect(within(dialog).queryByRole("group", { name: "提醒内容" })).toBeNull();
     expect(within(dialog).queryByText("保存后发送测试通知，成功后自动启用。")).toBeNull();
     expect((within(dialog).getByRole("button", { name: "保存" }) as HTMLButtonElement).disabled).toBe(true);
-    pairing.resolve({ id: "binding-1", provider: "feishu", status: "complete", targets: [{ id: "user-1", kind: "user", label: "我的账号" }] });
+    pairing.resolve({ id: "binding-1", provider: "feishu", status: "complete", connectionStatus: "ready", targets: [{ id: "user-1", kind: "user", label: "我的账号" }] });
     await within(dialog).findByRole("group", { name: "提醒内容" });
     expect(within(dialog).queryByText("通知范围")).toBeNull();
-    expect(within(dialog).getByRole("checkbox", { name: "商品上架或库存增加" }).closest("details")).toBeNull();
+    expect(within(dialog).getByRole("checkbox", { name: "商品上架或补货" }).closest("details")).toBeNull();
     await fireEvent.click(within(dialog).getByRole("button", { name: "手动配置" }));
     const title = within(dialog).getByLabelText("渠道名称");
     const appId = within(dialog).getByLabelText("应用 ID");
@@ -2182,6 +2308,58 @@ describe("桌面主流程", () => {
     expect(screen.getByLabelText("主机")).toBeTruthy();
   });
 
+  it.each([["weixin", "微信"], ["feishu", "飞书"], ["wecom", "企业微信"], ["dingtalk", "钉钉"]])("%s 切回扫码时恢复紧凑高度，模式入口和保存取消同处底栏", async (providerId, providerName) => {
+    current.providers = [{ id: providerId, name: providerName, supportsBinding: true, documentationUrl: null, fields: [] }];
+    bridge.invoke.mockImplementation(async (name: string, args?: Record<string, any>) => {
+      if (name === "get_desktop_snapshot") return structuredClone(current);
+      if (name === "query_messages") return messagePage(args!.query!);
+      if (["begin_channel_binding", "channel_binding_status"].includes(name)) return { id: "binding-1", provider: providerId, status: "waiting", targets: [], qrUrl: "https://official.example/registration" };
+      if (name === "cancel_channel_binding") return { message: null };
+      throw new Error(`Unexpected command: ${name}`);
+    });
+    render(Page);
+    await screen.findByRole("button", { name: "开始监控" });
+    await fireEvent.click(screen.getByRole("button", { name: "通知" }));
+    await fireEvent.click(screen.getByRole("button", { name: `添加${providerName}` }));
+    const dialog = screen.getByRole("dialog", { name: `添加${providerName}` });
+    expect(dialog.classList.contains("configured")).toBe(false);
+    expect(screen.getByRole("button", { name: "手动配置" }).closest(".modal-actions")).toBeTruthy();
+    expect(screen.queryByRole("group", { name: "提醒内容" })).toBeNull();
+    await fireEvent.click(screen.getByRole("button", { name: "手动配置" }));
+    expect(dialog.classList.contains("configured")).toBe(true);
+    expect(screen.getByLabelText("渠道名称")).toBeTruthy();
+    expect(screen.getByRole("group", { name: "提醒内容" }).closest(".channel-footer")).toBeTruthy();
+    await fireEvent.click(screen.getByRole("button", { name: "扫码连接" }));
+    expect(dialog.classList.contains("configured")).toBe(false);
+    expect(screen.queryByRole("group", { name: "提醒内容" })).toBeNull();
+    await fireEvent.click(screen.getByRole("button", { name: "关闭" }));
+    await fireEvent.click(screen.getByRole("button", { name: `添加${providerName}` }));
+    expect(screen.getByRole("dialog", { name: `添加${providerName}` }).classList.contains("configured")).toBe(false);
+  });
+
+  it("编辑既有渠道时手动切回扫码也显示新二维码并收缩", async () => {
+    current.channels = [{ ...channel, connectionStatus: "ready", targets: [{ id: "owner", kind: "user", label: "创建人" }], selectedTargets: [{ id: "owner", kind: "user", label: "创建人" }] }];
+    current.providers = [{ id: "feishu", name: "飞书", supportsBinding: true, documentationUrl: null, fields: [] }];
+    bridge.invoke.mockImplementation(async (name: string, args?: Record<string, any>) => {
+      if (name === "get_desktop_snapshot") return structuredClone(current);
+      if (name === "query_messages") return messagePage(args!.query!);
+      if (["begin_channel_editing", "end_channel_editing", "cancel_channel_binding"].includes(name)) return { message: null };
+      if (["begin_channel_rebinding", "channel_binding_status"].includes(name)) return { id: "rebind", provider: "feishu", status: "waiting", targets: [], qrUrl: "https://official.example/registration" };
+      throw new Error(`Unexpected command: ${name}`);
+    });
+    render(Page);
+    await screen.findByRole("button", { name: "开始监控" });
+    await fireEvent.click(screen.getByRole("button", { name: "通知" }));
+    await fireEvent.click(screen.getByRole("button", { name: "编辑工作群" }));
+    const dialog = screen.getByRole("dialog", { name: "编辑飞书" });
+    await screen.findByRole("checkbox", { name: "创建人 个人" });
+    await fireEvent.click(screen.getByRole("button", { name: "手动配置" }));
+    await fireEvent.click(screen.getByRole("button", { name: "扫码连接" }));
+    await screen.findByAltText("使用飞书扫描二维码");
+    expect(dialog.classList.contains("configured")).toBe(false);
+    expect(bridge.invoke).toHaveBeenCalledWith("begin_channel_rebinding", { channelId: channel.id });
+  });
+
   it("小窗口弹窗将操作栏留在滚动内容外，监控操作有明确状态", async () => {
     vi.stubGlobal("innerWidth", 720);
     vi.stubGlobal("innerHeight", 560);
@@ -2195,9 +2373,17 @@ describe("桌面主流程", () => {
     await fireEvent.click(screen.getByRole("button", { name: "添加飞书" }));
     const channelDialog = screen.getByRole("dialog", { name: "添加飞书" });
     expect(channelDialog.querySelector(".modal-body")).toBeTruthy();
-    expect(channelDialog.querySelector(".modal-actions")?.parentElement).toBe(channelDialog);
+    expect(channelDialog.querySelector(".modal-actions")?.closest(".channel-footer")?.parentElement).toBe(channelDialog);
+    const subscriptions = screen.getByRole("group", { name: "提醒内容" });
+    expect(subscriptions.parentElement?.classList.contains("channel-footer")).toBe(true);
+    expect(subscriptions.parentElement?.parentElement).toBe(channelDialog);
+    expect(subscriptions.nextElementSibling?.classList.contains("modal-actions")).toBe(true);
+    expect(channelDialog.querySelector(".modal-body")?.contains(subscriptions)).toBe(false);
     expect(pageSource).toMatch(/\.modal-body\s*\{[^}]*overflow-y:\s*auto/);
-    expect(pageSource).toMatch(/\.channel-modal \.modal-body\s*\{[^}]*flex:\s*0 1 auto/);
+    expect(pageSource).toMatch(/\.channel-modal\s*\{[^}]*height:\s*min\(500px, calc\(100dvh - 32px\)\)/);
+    expect(pageSource).toMatch(/\.channel-modal\.configured\s*\{[^}]*height:\s*min\(650px, calc\(100dvh - 32px\)\)/);
+    expect(pageSource).toMatch(/\.channel-modal \.modal-body\s*\{[^}]*flex:\s*1/);
+    expect(pageSource).toMatch(/\.channel-footer\s*\{[^}]*flex:\s*none/);
 
     await fireEvent.click(screen.getByRole("button", { name: "关闭" }));
     await fireEvent.click(screen.getByRole("button", { name: "代理池" }));

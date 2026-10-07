@@ -18,7 +18,7 @@ use tauri_plugin_dialog::DialogExt;
 pub(crate) struct DesktopBackend {
     pub app: MonitorApp,
     pub data_dir: PathBuf,
-    notification_permission: RwLock<PermissionState>,
+    notification_permission: RwLock<Result<PermissionState, String>>,
     pub worker_alive: AtomicBool,
     pub worker_task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     pub exit_phase: AtomicU8,
@@ -37,7 +37,7 @@ impl DesktopBackend {
         Ok(Self {
             app,
             data_dir: data_dir.to_path_buf(),
-            notification_permission: RwLock::new(permission),
+            notification_permission: RwLock::new(Ok(permission)),
             worker_alive: AtomicBool::new(true),
             worker_task: Mutex::new(None),
             exit_phase: AtomicU8::new(0),
@@ -47,13 +47,13 @@ impl DesktopBackend {
         })
     }
 
-    pub fn notification_permission(&self) -> PermissionState {
-        *self.notification_permission.read().unwrap()
+    pub fn notification_permission(&self) -> Result<PermissionState, String> {
+        self.notification_permission.read().unwrap().clone()
     }
 
     pub(crate) async fn set_notification_permission(
         &self,
-        permission: PermissionState,
+        permission: Result<PermissionState, String>,
     ) -> Result<(), String> {
         {
             let mut current = self.notification_permission.write().unwrap();
@@ -61,7 +61,10 @@ impl DesktopBackend {
                 return Ok(());
             }
             self.app
-                .set_platform_notifications_available(permission == PermissionState::Granted);
+                .set_platform_notifications_available(permission == Ok(PermissionState::Granted));
+            if let Err(error) = &permission {
+                write_log(&self.data_dir, error);
+            }
             *current = permission;
         }
         self.app
@@ -97,13 +100,14 @@ pub struct DesktopSnapshot {
 pub struct PlatformSnapshot {
     login_start_enabled: Option<bool>,
     notification_permission: &'static str,
+    notification_permission_error: Option<String>,
     project_url: Option<String>,
     tutorial_url: Option<String>,
     feedback_url: Option<String>,
 }
 
 impl DesktopSnapshot {
-    pub(crate) fn new(core: AppSnapshot, permission: PermissionState) -> Self {
+    pub(crate) fn new(core: AppSnapshot, permission: Result<PermissionState, String>) -> Self {
         Self {
             core,
             platform: PlatformSnapshot::current(permission),
@@ -166,13 +170,13 @@ pub async fn get_desktop_snapshot(
     handle: AppHandle,
     backend: State<'_, std::sync::Arc<DesktopBackend>>,
 ) -> Result<DesktopSnapshot, String> {
-    let permission = desktop_notifications::permission_state(&handle).await?;
+    let permission = desktop_notifications::permission_state(&handle).await;
     backend.set_notification_permission(permission).await?;
     backend
         .app
         .snapshot()
         .await
-        .map(|snapshot| DesktopSnapshot::new(snapshot, permission))
+        .map(|snapshot| DesktopSnapshot::new(snapshot, backend.notification_permission()))
         .map_err(|error| error.to_string())
 }
 
@@ -201,9 +205,12 @@ pub async fn refresh_notification_permission(
     app: AppHandle,
     backend: State<'_, std::sync::Arc<DesktopBackend>>,
 ) -> Result<PlatformSnapshot, String> {
-    let permission = desktop_notifications::permission_state(&app).await?;
-    backend.set_notification_permission(permission).await?;
-    Ok(PlatformSnapshot::current(permission))
+    let permission = desktop_notifications::permission_state(&app).await;
+    backend
+        .set_notification_permission(permission.clone())
+        .await?;
+    permission?;
+    Ok(PlatformSnapshot::current(backend.notification_permission()))
 }
 
 #[tauri::command]
@@ -212,8 +219,8 @@ pub async fn request_notification_permission(
     backend: State<'_, std::sync::Arc<DesktopBackend>>,
 ) -> Result<PlatformSnapshot, String> {
     let permission = desktop_notifications::request_permission(&app).await?;
-    backend.set_notification_permission(permission).await?;
-    Ok(PlatformSnapshot::current(permission))
+    backend.set_notification_permission(Ok(permission)).await?;
+    Ok(PlatformSnapshot::current(backend.notification_permission()))
 }
 
 fn needs_notification_request(permission: PermissionState) -> bool {
@@ -228,11 +235,12 @@ pub async fn test_system_notification(
     app: AppHandle,
     backend: State<'_, std::sync::Arc<DesktopBackend>>,
 ) -> Result<&'static str, String> {
-    let mut permission = desktop_notifications::permission_state(&app).await?;
-    backend.set_notification_permission(permission).await?;
+    let reading = desktop_notifications::permission_state(&app).await;
+    backend.set_notification_permission(reading.clone()).await?;
+    let mut permission = reading?;
     if needs_notification_request(permission) {
         permission = desktop_notifications::request_permission(&app).await?;
-        backend.set_notification_permission(permission).await?;
+        backend.set_notification_permission(Ok(permission)).await?;
     }
     if permission != PermissionState::Granted {
         return Ok("permission_denied");
@@ -489,6 +497,19 @@ pub async fn cancel_channel_binding(
         .await
         .map_err(|error| error.to_string())?;
     Ok(OperationResult::ok())
+}
+
+#[tauri::command]
+pub async fn submit_channel_binding_verification(
+    backend: State<'_, std::sync::Arc<DesktopBackend>>,
+    binding_id: String,
+    code: String,
+) -> Result<ChannelBinding, String> {
+    backend
+        .app
+        .submit_channel_binding_verification(&binding_id, &code)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -811,15 +832,17 @@ pub struct DiagnosticPath {
 }
 
 impl PlatformSnapshot {
-    fn current(permission: PermissionState) -> Self {
+    fn current(permission: Result<PermissionState, String>) -> Self {
         Self {
             login_start_enabled: login_start_enabled(),
-            notification_permission: match permission {
-                PermissionState::Granted => "granted",
-                PermissionState::Denied => "denied",
-                PermissionState::Prompt => "prompt",
-                PermissionState::PromptWithRationale => "prompt_with_rationale",
+            notification_permission: match &permission {
+                Ok(PermissionState::Granted) => "granted",
+                Ok(PermissionState::Denied) => "denied",
+                Ok(PermissionState::Prompt) => "prompt",
+                Ok(PermissionState::PromptWithRationale) => "prompt_with_rationale",
+                Err(_) => "unavailable",
             },
+            notification_permission_error: permission.err(),
             project_url: Some("https://github.com/lavapapa/open-richo-monitor".into()),
             tutorial_url: Some("https://github.com/lavapapa/open-richo-monitor#一桌面使用".into()),
             feedback_url: Some("https://github.com/lavapapa/open-richo-monitor/issues".into()),
@@ -1147,6 +1170,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn notification_read_errors_survive_monitor_snapshots_and_clear_on_real_recovery() {
+        let directory = std::env::temp_dir().join(format!(
+            "ricoh-permission-read-error-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let backend = DesktopBackend::open(&directory, PermissionState::Granted).unwrap();
+        let mut snapshots = backend.subscribe();
+        let failure = "Windows 通知权限读取失败：0x80070490".to_string();
+        backend
+            .set_notification_permission(Err(failure.clone()))
+            .await
+            .unwrap();
+        snapshots.try_recv().expect("权限错误应发布状态");
+        let snapshot = DesktopSnapshot::new(
+            backend.app.snapshot().await.unwrap(),
+            backend.notification_permission(),
+        );
+        assert_eq!(snapshot.platform.notification_permission, "unavailable");
+        assert_eq!(
+            snapshot.platform.notification_permission_error.as_deref(),
+            Some(failure.as_str())
+        );
+        while snapshots.try_recv().is_ok() {}
+        backend
+            .set_notification_permission(Err(failure))
+            .await
+            .unwrap();
+        assert!(snapshots.try_recv().is_err(), "相同错误不反复发布");
+        backend
+            .set_notification_permission(Ok(PermissionState::Granted))
+            .await
+            .unwrap();
+        snapshots.try_recv().expect("读取恢复应发布状态");
+        let snapshot = DesktopSnapshot::new(
+            backend.app.snapshot().await.unwrap(),
+            backend.notification_permission(),
+        );
+        assert_eq!(snapshot.platform.notification_permission, "granted");
+        assert!(snapshot.platform.notification_permission_error.is_none());
+        drop(backend);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
     async fn idle_permission_changes_publish_once_and_recover() {
         let directory = std::env::temp_dir().join(format!(
             "ricoh-idle-permission-test-{}-{}",
@@ -1156,7 +1224,7 @@ mod tests {
         let backend = DesktopBackend::open(&directory, PermissionState::Prompt).unwrap();
         let mut snapshots = backend.subscribe();
         backend
-            .set_notification_permission(PermissionState::Prompt)
+            .set_notification_permission(Ok(PermissionState::Prompt))
             .await
             .unwrap();
         assert!(snapshots.try_recv().is_err());
@@ -1166,7 +1234,7 @@ mod tests {
             PermissionState::Granted,
         ] {
             backend
-                .set_notification_permission(permission)
+                .set_notification_permission(Ok(permission))
                 .await
                 .unwrap();
             let snapshot = snapshots.try_recv().expect("权限变化应立即通知界面");
@@ -1181,7 +1249,7 @@ mod tests {
                 }
             );
             backend
-                .set_notification_permission(permission)
+                .set_notification_permission(Ok(permission))
                 .await
                 .unwrap();
             assert!(snapshots.try_recv().is_err());
@@ -1228,7 +1296,7 @@ mod tests {
         backend.app.complete_setup().await.unwrap();
         assert!(backend.app.snapshot().await.unwrap().setup_completed);
         backend
-            .set_notification_permission(PermissionState::Granted)
+            .set_notification_permission(Ok(PermissionState::Granted))
             .await
             .unwrap();
         assert_eq!(
@@ -1242,7 +1310,7 @@ mod tests {
         );
         assert!(backend.app.snapshot().await.unwrap().setup_completed);
         backend
-            .set_notification_permission(PermissionState::Denied)
+            .set_notification_permission(Ok(PermissionState::Denied))
             .await
             .unwrap();
         assert_eq!(

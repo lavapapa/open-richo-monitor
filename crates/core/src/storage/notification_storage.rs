@@ -359,12 +359,25 @@ impl Storage {
         get_channel(&self.conn, id)
     }
 
-    pub fn update_notification_channel_details(&mut self, id: &str, name: &str, subscriptions: &[String]) -> Result<(), StorageError> {
-        if name.trim().is_empty() || subscriptions.iter().any(|value| !["stock_available", "monitoring_failed", "recovered"].contains(&value.as_str())) {
+    pub fn update_notification_channel_details(
+        &mut self,
+        id: &str,
+        name: &str,
+        subscriptions: &[String],
+    ) -> Result<(), StorageError> {
+        if name.trim().is_empty()
+            || subscriptions.iter().any(|value| {
+                !["stock_available", "monitoring_failed", "recovered"].contains(&value.as_str())
+            })
+        {
             return Err(StorageError::InvalidChannel);
         }
         let encoded = serde_json::to_string(subscriptions).map_err(StorageError::ConfigJson)?;
-        if self.conn.execute("UPDATE notification_channels SET name=?2,subscriptions=?3 WHERE id=?1", params![id, name, encoded])? == 0 {
+        if self.conn.execute(
+            "UPDATE notification_channels SET name=?2,subscriptions=?3 WHERE id=?1",
+            params![id, name, encoded],
+        )? == 0
+        {
             return Err(StorageError::ChannelMissing);
         }
         Ok(())

@@ -125,7 +125,7 @@
     {:else}
       <h1 bind:this={heading} tabindex="-1">恭喜！</h1>
       <p class="completion-title">现在您拥有了自己的理光商城上架监控。</p>
-      <p class="completion-message">{notificationReady ? "商品上架或库存增加时，会立即提醒你。" : "通知尚未启用，可在 App 内查看监控消息。"}</p>
+      <p class="completion-message">{notificationReady ? "商品上架或补货时，会立即提醒你。" : "通知尚未启用，可在 App 内查看监控消息。"}</p>
       <div class="startup-options">
         <label class="login-start"><input type="checkbox" bind:checked={loginStart} disabled={busy || saving} /><span>登录后启动</span></label>
         <label class="login-start"><input type="checkbox" bind:checked={autoStartMonitoring} disabled={busy || saving} /><span>启动后自动开启监控</span></label>

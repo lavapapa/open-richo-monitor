@@ -146,6 +146,31 @@ pub struct ListingEvent {
     pub stock: f64,
     pub request_sequence: u64,
     pub observed_at_ms: i64,
+    pub notification_details: EventNotificationDetails,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct EventNotificationDetails {
+    pub previous_is_show: Option<u8>,
+    pub previous_stock: Option<f64>,
+    pub failure: Option<FailureNotificationDetails>,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct FailureNotificationDetails {
+    pub reason: Option<String>,
+    pub count: u64,
+    pub active_duration_ms: u64,
+}
+
+fn notification_details_from_json(
+    value: Option<String>,
+) -> rusqlite::Result<EventNotificationDetails> {
+    value
+        .map(|json| serde_json::from_str(&json).map_err(|_| rusqlite::Error::InvalidQuery))
+        .transpose()
+        .map(|details| details.unwrap_or_default())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -488,6 +513,12 @@ impl Storage {
         conn.execute("INSERT INTO event_sequence(singleton,value) VALUES(1,(SELECT COALESCE(MAX(id),0) FROM events))
             ON CONFLICT(singleton) DO UPDATE SET value=MAX(value,excluded.value)", [])?;
         runtime_storage::initialize(&conn)?;
+        if !column_exists(&conn, "events", "notification_details_json")? {
+            conn.execute(
+                "ALTER TABLE events ADD COLUMN notification_details_json TEXT",
+                [],
+            )?;
+        }
         catalog_lifecycle::initialize(&conn)?;
         product_metadata::initialize(&conn)?;
         product_statistics::initialize(&conn)?;
@@ -668,9 +699,15 @@ impl Storage {
     }
 
     pub fn complete_setup(&mut self) -> Result<(), StorageError> {
-        let intent = if self.monitor_config()?.auto_start_monitoring { "running" } else { "stopped" };
+        let intent = if self.monitor_config()?.auto_start_monitoring {
+            "running"
+        } else {
+            "stopped"
+        };
         let end_round = intent == "stopped" && self.run_intent()? != RunIntent::Stopped;
-        let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let changed = tx.execute(
             "UPDATE settings SET setup_confirmed=1, run_intent=?1 WHERE id=1",
             [intent],
@@ -678,7 +715,9 @@ impl Storage {
         if changed == 0 {
             return Err(StorageError::MonitorConfigMissing);
         }
-        if end_round { advance_enabled_rounds(&tx)?; }
+        if end_round {
+            advance_enabled_rounds(&tx)?;
+        }
         tx.commit()?;
         Ok(())
     }
@@ -1360,6 +1399,11 @@ impl Storage {
                 },
             )
             .optional()?;
+        let notification_details = EventNotificationDetails {
+            previous_is_show: previous.as_ref().map(|(_, is_show, _)| *is_show),
+            previous_stock: previous.as_ref().and_then(|(_, _, stock)| *stock),
+            failure: None,
+        };
         tx.execute(
             "INSERT INTO observations (
                  product_key, availability, is_show, stock, request_sequence, observed_at_ms
@@ -1417,6 +1461,8 @@ impl Storage {
 
         let event = if let Some(transition) = transition {
             let stock = state.stock.expect("上架或有货跃迁包含真实库存");
+            let details_json =
+                serde_json::to_string(&notification_details).map_err(StorageError::ConfigJson)?;
             let kind = match transition {
                 AvailabilityTransition::FirstObservedInStock => {
                     MonitorEventKind::FirstObservedInStock
@@ -1443,9 +1489,9 @@ impl Storage {
             } else {
                 let inserted = tx.execute(
                     "INSERT INTO events (
-                     id, product_key, event_kind, stock, request_sequence, observed_at_ms
+                     id, product_key, event_kind, stock, request_sequence, observed_at_ms, notification_details_json
                  )
-                 VALUES ((SELECT value+1 FROM event_sequence WHERE singleton=1), ?1, ?2, ?3, ?4, ?5)
+                 VALUES ((SELECT value+1 FROM event_sequence WHERE singleton=1), ?1, ?2, ?3, ?4, ?5, ?6)
                  ON CONFLICT(product_key, request_sequence, event_kind) DO NOTHING",
                     params![
                         product.key,
@@ -1453,6 +1499,7 @@ impl Storage {
                         stock,
                         sequence,
                         state.observed_at_ms,
+                        details_json,
                     ],
                 )?;
                 let event_id = tx.query_row(
@@ -1470,6 +1517,7 @@ impl Storage {
                 stock,
                 request_sequence: state.request_sequence,
                 observed_at_ms: state.observed_at_ms,
+                notification_details,
             };
             if inserted != 0 {
                 notification_outbox::enqueue_event(&tx, &event)?;
@@ -1505,6 +1553,29 @@ impl Storage {
         };
         let tx = self.conn.savepoint()?;
         ensure_product(&tx, &product)?;
+        let failure = if kind == MonitorEventKind::MonitoringFailed {
+            tx.query_row(
+                "SELECT last_error,failure_count,active_failure_ms FROM monitoring_health
+                 WHERE product_key=?1 AND request_sequence=?2",
+                params![product.key, sequence],
+                |row| {
+                    Ok(FailureNotificationDetails {
+                        reason: row.get(0)?,
+                        count: row.get::<_, i64>(1)? as u64,
+                        active_duration_ms: row.get::<_, i64>(2)? as u64,
+                    })
+                },
+            )
+            .optional()?
+        } else {
+            None
+        };
+        let notification_details = EventNotificationDetails {
+            failure,
+            ..Default::default()
+        };
+        let details_json =
+            serde_json::to_string(&notification_details).map_err(StorageError::ConfigJson)?;
         let stock = tx
             .query_row(
                 "SELECT stock FROM observations WHERE product_key=?1",
@@ -1514,14 +1585,14 @@ impl Storage {
             .optional()?
             .unwrap_or(0.0);
         let inserted = tx.execute(
-            "INSERT INTO events (id,product_key,event_kind,stock,request_sequence,observed_at_ms)
-             VALUES ((SELECT value+1 FROM event_sequence WHERE singleton=1),?1,?2,?3,?4,?5)
+            "INSERT INTO events (id,product_key,event_kind,stock,request_sequence,observed_at_ms,notification_details_json)
+             VALUES ((SELECT value+1 FROM event_sequence WHERE singleton=1),?1,?2,?3,?4,?5,?6)
              ON CONFLICT(product_key,request_sequence,event_kind) DO NOTHING",
-            params![product.key, event_kind_to_db(kind), stock, sequence, at_ms],
+            params![product.key, event_kind_to_db(kind), stock, sequence, at_ms, details_json],
         )?;
         let event = tx.query_row(
             "SELECT e.id,p.product_key,p.product_id,p.sku_id,e.event_kind,e.stock,
-                    e.request_sequence,e.observed_at_ms
+                    e.request_sequence,e.observed_at_ms,e.notification_details_json
              FROM events e JOIN products p USING(product_key)
              WHERE e.product_key=?1 AND e.request_sequence=?2 AND e.event_kind=?3",
             params![product.key, sequence, event_kind_to_db(kind)],
@@ -1568,7 +1639,7 @@ impl Storage {
         let limit = limit.min(HISTORY_LIMIT) as i64;
         let mut statement = self.conn.prepare(
             "SELECT e.id, p.product_key, p.product_id, p.sku_id, e.event_kind, e.stock,
-                    e.request_sequence, e.observed_at_ms
+                    e.request_sequence, e.observed_at_ms, e.notification_details_json
              FROM events e JOIN products p USING (product_key)
              WHERE e.product_key = ?1
                AND (?2 IS NULL OR e.observed_at_ms >= ?2)
@@ -1587,7 +1658,7 @@ impl Storage {
     pub fn recent_events(&self, limit: usize) -> Result<Vec<ListingEvent>, StorageError> {
         let mut statement = self.conn.prepare(
             "SELECT e.id, p.product_key, p.product_id, p.sku_id, e.event_kind, e.stock,
-                    e.request_sequence, e.observed_at_ms
+                    e.request_sequence, e.observed_at_ms, e.notification_details_json
              FROM events e JOIN products p USING (product_key)
              ORDER BY e.observed_at_ms DESC, e.id DESC
              LIMIT ?1",
@@ -1621,24 +1692,6 @@ impl Storage {
         })?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(StorageError::from)
-    }
-
-    pub fn stock_before_check_run(
-        &self,
-        product_key: &str,
-        observed_at_ms: i64,
-        stock: f64,
-    ) -> Result<Option<f64>, StorageError> {
-        Ok(self.conn.query_row(
-            "SELECT previous.stock FROM check_runs current
-             JOIN check_runs previous ON previous.product_key=current.product_key
-                AND previous.id < current.id
-             WHERE current.product_key=?1 AND current.first_at_ms=?2 AND current.stock=?3
-               AND NOT EXISTS(SELECT 1 FROM check_run_stock_absences a WHERE a.check_run_id=previous.id)
-             ORDER BY current.id DESC, previous.id DESC LIMIT 1",
-            params![product_key, observed_at_ms, stock],
-            |row| row.get(0),
-        ).optional()?)
     }
 
     pub fn cleanup(&mut self, now_ms: i64, batch_size: usize) -> Result<usize, StorageError> {
@@ -1938,6 +1991,7 @@ fn event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ListingEvent> {
         stock: row.get(5)?,
         request_sequence: u64::try_from(sequence).map_err(|_| rusqlite::Error::InvalidQuery)?,
         observed_at_ms: row.get(7)?,
+        notification_details: notification_details_from_json(row.get(8)?)?,
     })
 }
 

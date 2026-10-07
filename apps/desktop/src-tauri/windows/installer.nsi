@@ -828,6 +828,8 @@ Section Uninstall
   ; Remove shortcuts if not updating
   ${If} $UpdateMode <> 1
     !insertmacro DeleteAppUserModelId
+    DeleteRegKey HKCU "Software\Classes\AppUserModelId\${BUNDLEID}"
+    DeleteRegKey HKCU "Software\Classes\${BUNDLEID}"
 
     ; Remove start menu shortcut
     !insertmacro MUI_STARTMENU_GETFOLDER Application $AppStartMenuFolder

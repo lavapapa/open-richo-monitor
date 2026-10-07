@@ -65,6 +65,10 @@ const api = createHttpsServer({
     for await (const chunk of request) raw += chunk;
     const body = JSON.parse(raw);
     response.setHeader('content-type', 'application/json');
+    if (request.url === '/ilink/bot/msg/notifystart' || request.url === '/ilink/bot/msg/notifystop') {
+      response.end(JSON.stringify({ ret: 0 }));
+      return;
+    }
     if (request.url === '/ilink/bot/getupdates') {
       polls += 1;
       pollResponses.add(response);
@@ -191,8 +195,8 @@ try {
   const runtime = startRuntime();
   assert.deepEqual((await runtime.rpc('status')).accounts, [], '通知模块应独立启动并响应 RPC');
   await runtime.rpc('configure', configuration(true));
-  assert.equal((await runtime.rpc('status')).accounts[0].status, 'ready');
   await waitFor(() => polls > 0, '应通过本地代理启动真实 TLS 长轮询');
+  assert.equal((await runtime.rpc('status')).accounts[0].status, 'ready');
   assert.equal((await send(runtime, 'accepted')).outcome, 'accepted');
   const rejected = await send(runtime, 'rejected');
   assert.equal(rejected.outcome, 'failed');
@@ -259,7 +263,7 @@ ${feishuFixtures}
 await run(process.stdin, new Runtime({ sdk: { FeishuWSClient: FakeWs, FeishuEventDispatcher: FakeDispatcher } }));
 `);
   const feishu = startRuntime(feishuProbe);
-  const feishuConfiguration = (enabled) => ({ accounts: [{ id: 'fixture-feishu', provider: 'feishu', credentials: { appId: 'fixture', appSecret: 'fixture' }, targets: [], enabled }], network: 'system_proxy', proxyUrl: configuration(true).proxyUrl });
+  const feishuConfiguration = (enabled) => ({ accounts: [{ id: 'fixture-feishu', provider: 'feishu', credentials: { appId: 'cli_0123456789abcdef', appSecret: 'fixture' }, targets: [], enabled }], network: 'system_proxy', proxyUrl: configuration(true).proxyUrl });
   await feishu.rpc('configure', feishuConfiguration(true));
   const feishuSend = feishu.rpc('send', { accountId: 'fixture-feishu', target: { id: 'fixture-chat', kind: 'chat' }, text: 'fixture' });
   await waitFor(() => feishuSockets.size > 0, '官方飞书 HTTP SDK 应在本地代理等待 CONNECT 响应');
@@ -310,7 +314,7 @@ await run(process.stdin, runtime);
     const activeSockets = provider === 'feishu' ? feishuSockets : wecomSockets;
     const previousConnects = provider === 'feishu' ? feishuConnects : wecomConnects;
     await transport.rpc('configure', configuration(true));
-    await waitFor(() => provider === 'feishu' ? feishuConnects >= previousConnects + 2 : wecomConnects > previousConnects, `${provider} 官方 SDK 应开始初始连接`);
+    await waitFor(() => provider === 'feishu' ? feishuConnects > previousConnects : wecomConnects > previousConnects, `${provider} 官方 SDK 应开始初始连接`);
     assert.ok(activeSockets.size > 0);
     const disabledAt = Date.now();
     await transport.rpc('configure', configuration(false));
