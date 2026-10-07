@@ -2,7 +2,8 @@ RichoMonitor 小范围试用
 
 Mac 安装
 
-此 Mac 包用于 Apple Silicon，需要 macOS 13 或更新系统。
+Mac 需要 macOS 13 或更新系统。Apple Silicon 选择 aarch64.dmg，
+Intel Mac 选择 x64.dmg；请下载与电脑处理器对应的安装包。
 打开 DMG，将 RichoMonitor 拖入 Applications（应用程序），
 弹出磁盘映像，再从应用程序打开。
 

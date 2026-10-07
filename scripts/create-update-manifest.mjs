@@ -11,6 +11,8 @@ const files = {
   'darwin-aarch64': `${config.productName}_${config.version}_aarch64.app.tar.gz`,
   'windows-x86_64': `${config.productName}_${config.version}_x64-setup.exe`,
 };
+const intelArchive = `${config.productName}_${config.version}_x64.app.tar.gz`;
+if (existsSync(path.join(directory, intelArchive))) files['darwin-x86_64'] = intelArchive;
 const platforms = Object.fromEntries(Object.entries(files).map(([target, filename]) => {
   if (!existsSync(path.join(directory, filename))) throw new Error(`缺少更新构件：${filename}`);
   const signature = readFileSync(path.join(directory, `${filename}.sig`), 'utf8').trim();

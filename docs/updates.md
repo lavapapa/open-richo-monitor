@@ -12,7 +12,7 @@
 
 ## 二、构件
 
-每个版本分别发布 Apple Silicon 与 Windows x64。`scripts/create-update-manifest.mjs` 从配置版本和实际 `.sig` 生成平台条目。Mac 更新使用完整 `.app.tar.gz`，Windows 更新使用同一 NSIS `.exe`；DMG 供手动安装。架构选择由官方插件完成。
+发行流程构建 Apple Silicon 与 Windows x64；Intel Mac 按需在实机补充构建。`scripts/create-update-manifest.mjs` 从配置版本和实际 `.sig` 生成平台条目；目录中包含 Intel 更新归档时，加入 `darwin-x86_64` 条目。Mac 更新使用完整 `.app.tar.gz`，Windows 更新使用同一 NSIS `.exe`；DMG 供手动安装。架构选择由官方插件完成。
 
 原生程序、通知脚本、Bun 可执行文件与第三方声明作为一个安装单元交付。更换 Bun 时按 `scripts/build-notification-runtime.mjs` 的冻结版本更新源码资料，并在目标架构执行 `scripts/test-notification-runtime.mjs`。Mac 构建通过 `scripts/build-macos.mjs` 恢复 Bun 原厂签名、签外层 App，然后重新生成并签署更新归档；不得使用恢复签名前的归档。
 
