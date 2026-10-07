@@ -63,36 +63,22 @@ pub async fn check_for_updates(app: tauri::AppHandle) -> Result<UpdateStatus, St
     pending.status.phase = "checking";
     pending.status.error = None;
     pending.status.emit(&app);
-    let result = async {
-        let builder = app.updater_builder().timeout(Duration::from_secs(30));
-        // 更新独立于商城请求设置，遵循操作系统的 HTTPS 代理；下载复用相同代理。
-        let builder = match crate::notification_proxy::current()
-            .map_err(|_| "系统代理无法用于检查更新，请检查系统网络代理设置。".to_string())?
-        {
-            Some(proxy) => {
-                builder.proxy(url::Url::parse(&proxy).map_err(|error| error.to_string())?)
-            }
-            None => builder,
-        };
-        #[cfg(target_os = "windows")]
-        let builder = {
-            let handle = app.clone();
-            // Windows 安装器直接退出进程，跳过 RunEvent；先收尾监控和 Bun，保存平台会话。
-            builder.on_before_exit(move || {
-                let backend = handle.state::<Arc<DesktopBackend>>();
-                backend.exit_phase.store(1, Ordering::Release);
-                tauri::async_runtime::block_on(crate::drain_worker(backend.inner()));
-                handle.cleanup_before_exit();
-            })
-        };
-        builder
-            .build()
-            .map_err(|error| error.to_string())?
-            .check()
-            .await
-            .map_err(|error| error.to_string())
-    }
-    .await;
+    let builder = app.updater_builder().timeout(Duration::from_secs(30));
+    #[cfg(target_os = "windows")]
+    let builder = {
+        let handle = app.clone();
+        // Windows 安装器直接退出进程，跳过 RunEvent；先收尾监控和 Bun，保存平台会话。
+        builder.on_before_exit(move || {
+            let backend = handle.state::<Arc<DesktopBackend>>();
+            backend.exit_phase.store(1, Ordering::Release);
+            tauri::async_runtime::block_on(crate::drain_worker(backend.inner()));
+            handle.cleanup_before_exit();
+        })
+    };
+    let result = match builder.build() {
+        Ok(updater) => updater.check().await,
+        Err(error) => Err(error),
+    };
     match result {
         Ok(update) => {
             pending.status = UpdateStatus {
