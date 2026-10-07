@@ -4,10 +4,17 @@
     "beforeBuildCommand": "npm run build:notifications && node ../../scripts/test-notification-runtime.mjs src-tauri/binaries/notification-runtime-x86_64-pc-windows-msvc.exe && npm run build"
   },
   "bundle": {
-    "externalBin": ["binaries/notification-runtime"],
+    "externalBin": [
+      "binaries/notification-runtime"
+    ],
     "resources": {
       "binaries/notification-runtime.mjs": "notification-runtime.mjs",
       "binaries/notification-runtime-NOTICES.txt": "notification-runtime-NOTICES.txt"
+    },
+    "windows": {
+      "nsis": {
+        "template": "windows/installer.nsi"
+      }
     }
   }
 }

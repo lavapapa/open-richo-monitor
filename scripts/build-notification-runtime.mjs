@@ -27,6 +27,7 @@ const noticeFiles = [
   path.join(root, 'apps/desktop/THIRD_PARTY_ASSETS.txt'),
   ...['NOTICE.md', 'THIRD_PARTY_NOTICES.md', 'LICENSE.dsh-im', 'LICENSE.larksuite', 'LICENSE.dingtalk'].map(name => path.join(runtime, name)),
 ];
+if (process.platform === 'win32') noticeFiles.push(path.join(root, 'apps/desktop/src-tauri/windows/LICENSE-MIT.txt'));
 function collectLicenses(folder) {
   for (const entry of readdirSync(folder, { withFileTypes: true })) {
     const file = path.join(folder, entry.name);
