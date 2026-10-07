@@ -91,5 +91,6 @@ jobs:
           test "$GITHUB_REF" = "refs/tags/v$VERSION"
           gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v$VERSION" > /dev/null
           find dist/release -mindepth 2 -type f -exec cp {} dist/release/ \;
-          node scripts/create-update-manifest.mjs dist/release
-          gh release create "v$VERSION" $(find dist/release -maxdepth 1 -type f) --verify-tag --draft --title "RichoMonitor $VERSION" --generate-notes
+          cp docs/private-trial.txt dist/release/INSTALL.txt
+          node scripts/create-update-manifest.mjs dist/release "docs/releases/v$VERSION.md"
+          gh release create "v$VERSION" $(find dist/release -maxdepth 1 -type f) --verify-tag --draft --title "RichoMonitor $VERSION · 公开试用版" --notes-file "docs/releases/v$VERSION.md"
