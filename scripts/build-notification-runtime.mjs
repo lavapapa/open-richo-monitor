@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
@@ -47,5 +47,9 @@ execFileSync(bun, [
 // Bun 自报启动文件路径，避免依赖调用方的 PATH 或工作目录。
 const bunExecutable = execFileSync(bun, ['--no-env-file', '-e', 'process.stdout.write(process.execPath)'], { encoding: 'utf8' });
 const destination = path.join(directory, `notification-runtime-${target[0]}${target[1]}`);
-// 构建工具也可直接使用已准备好的 sidecar，避免原地改写正在使用的签名文件。
-if (path.resolve(bunExecutable) !== path.resolve(destination)) copyFileSync(bunExecutable, destination);
+// macOS 缓存签名与文件节点绑定；替换文件节点，避免原地改写导致后续启动被终止。
+if (path.resolve(bunExecutable) !== path.resolve(destination)) {
+  const staging = `${destination}.${process.pid}.tmp`;
+  copyFileSync(bunExecutable, staging);
+  renameSync(staging, destination);
+}
