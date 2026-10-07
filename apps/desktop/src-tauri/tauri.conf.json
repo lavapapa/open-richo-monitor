@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "open-richo-monitor",
-  "version": "0.1.1",
+  "productName": "RichoMonitor",
+  "version": "0.1.2",
   "identifier": "dev.ricohmonitor.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -13,7 +13,7 @@
     "macOSPrivateApi": true,
     "windows": [
       {
-        "title": "open-richo-monitor",
+        "title": "RichoMonitor",
         "width": 1280,
         "height": 860,
         "minWidth": 720,
@@ -47,7 +47,10 @@
   "plugins": {
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDIwMTVERDU4N0QwQTkxQjMKUldTemtRcDlXTjBWSUxGaTdVdkxQNU9jNjYxd21tZytOM1RwNExWVFVIS2dmVVpoeXdKdFZCS20K",
-      "endpoints": ["https://github.com/lavapapa/open-richo-monitor/releases/latest/download/latest.json"]
+      "endpoints": [
+        "https://gitee.com/marvinfore/open-richo-monitor/releases/download/latest/latest.json",
+        "https://github.com/lavapapa/open-richo-monitor/releases/latest/download/latest.json"
+      ]
     }
   }
 }

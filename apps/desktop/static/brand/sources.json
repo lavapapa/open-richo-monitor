@@ -29,6 +29,6 @@
       "prompt": "Use case: stylized-concept. Create a premium stylized 3D editorial illustration asset for a desktop app called open-richo-mail-monitor, a compact camera stock-notification utility. A single complete compact street-photography camera inspired by the proportions of the Ricoh GR series, not a photograph and no brand logos or lettering. Entire camera fully visible, centered, generous 16% transparent safe padding on all four sides, no cropping, no cut-off shadow. Slight three-quarter front view, gently tilted only 8 degrees, low-perspective orthographic product sculpture. Graphite textured magnesium body, muted forest-green enamel details, precision brushed-silver shutter control, beautiful deep smoked optical glass with restrained green reflections. Soft sculptural realism with simplified intentional forms, tactile soft studio light from upper left, refined industrial design, small soft contact shadow only. Visually clear when displayed at 180px wide in an app sidebar. Transparent background, no platform, no scene, no UI, no text, no cables, no extra objects. Output one isolated camera."
     }
   ],
-  "wordmark": { "file": "rm-wordmark.svg", "generator": "独立几何字形 SVG", "reference": "用户提供的宽厚几何字形与红色参考", "text": "RM", "subtitle": "open-richo-monitor" },
+  "wordmark": { "file": "rm-wordmark.svg", "generator": "独立几何字形 SVG", "reference": "用户提供的宽厚几何字形与红色参考", "text": "RM", "subtitle": "RichoMonitor" },
   "notice": "相机与应用图标素材由 AI 生成，当前侧栏使用独立 RM 字标；本应用与理光官方无隶属关系。"
 }

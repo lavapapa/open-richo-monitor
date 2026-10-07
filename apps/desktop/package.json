@@ -1,7 +1,7 @@
 {
   "name": "ricoh-monitor-desktop",
-  "version": "0.1.1",
-  "description": "open-richo-monitor 桌面端",
+  "version": "0.1.2",
+  "description": "RichoMonitor 桌面端",
   "type": "module",
   "scripts": {
     "build:notifications": "node ../../scripts/build-notification-runtime.mjs",

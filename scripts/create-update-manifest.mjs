@@ -6,10 +6,9 @@ const root = fileURLToPath(new URL('../', import.meta.url));
 const config = JSON.parse(readFileSync(path.join(root, 'apps/desktop/src-tauri/tauri.conf.json'), 'utf8'));
 const directory = path.resolve(process.argv[2] || path.join(root, 'dist/release'));
 const notes = process.argv[3] ? readFileSync(process.argv[3], 'utf8') : '更新应用及内置通知模块。';
-const base = `https://github.com/lavapapa/open-richo-monitor/releases/download/v${config.version}`;
+const base = process.argv[4] || `https://github.com/lavapapa/open-richo-monitor/releases/download/v${config.version}`;
 const files = {
   'darwin-aarch64': `${config.productName}_${config.version}_aarch64.app.tar.gz`,
-  'darwin-x86_64': `${config.productName}_${config.version}_x64.app.tar.gz`,
   'windows-x86_64': `${config.productName}_${config.version}_x64-setup.exe`,
 };
 const platforms = Object.fromEntries(Object.entries(files).map(([target, filename]) => {

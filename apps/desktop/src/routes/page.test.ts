@@ -720,7 +720,7 @@ describe("桌面主流程", () => {
     render(Page);
     await screen.findByRole("heading", { name: "已停止" });
     expect(screen.getByRole("img", { name: "RM" }).getAttribute("src")).toBe("/brand/rm-wordmark.svg");
-    expect(screen.getByText("open-richo-monitor")).toBeTruthy();
+    expect(screen.getByText("RichoMonitor")).toBeTruthy();
     expect(screen.getByRole("navigation", { name: "主导航" }).querySelectorAll("button")).toHaveLength(6);
     expect(pageSource).toMatch(/\.message-table \{[^}]*min-width: 560px/);
     expect(pageSource).toMatch(/\.shell \{[^}]*grid-template-columns: 210px/);
@@ -1105,7 +1105,7 @@ describe("桌面主流程", () => {
     await screen.findByRole("button", { name: "开始监控" });
     await fireEvent.click(screen.getByRole("button", { name: "其他设置" }));
     expect(screen.getByText("版本 0.1.0")).toBeTruthy();
-    expect(screen.getAllByText("open-richo-monitor").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("RichoMonitor").length).toBeGreaterThan(0);
   });
 
   it("成功检查后设置页显示当前已是最新版本", async () => {

@@ -37,14 +37,14 @@ impl UpdateStatus {
 }
 
 struct PendingUpdate {
-    update: Option<Update>,
+    updates: Vec<Update>,
     status: UpdateStatus,
 }
 
 impl Default for PendingUpdate {
     fn default() -> Self {
         Self {
-            update: None,
+            updates: Vec::new(),
             status: UpdateStatus {
                 phase: "idle",
                 ..Default::default()
@@ -56,13 +56,14 @@ impl Default for PendingUpdate {
 #[derive(Default)]
 pub struct UpdateState(Mutex<PendingUpdate>);
 
-#[tauri::command]
-pub async fn check_for_updates(app: tauri::AppHandle) -> Result<UpdateStatus, String> {
-    let state = app.state::<UpdateState>();
-    let mut pending = state.0.try_lock().map_err(|_| "更新正在进行，请稍候。")?;
-    pending.status.phase = "checking";
-    pending.status.error = None;
-    pending.status.emit(&app);
+fn latest_version<'a>(versions: impl Iterator<Item = &'a str>) -> Option<semver::Version> {
+    // Update 的版本已由官方插件解析过。
+    versions
+        .map(|version| semver::Version::parse(version).unwrap())
+        .max()
+}
+
+fn updater_builder(app: &tauri::AppHandle) -> tauri_plugin_updater::UpdaterBuilder {
     let builder = app.updater_builder().timeout(Duration::from_secs(30));
     #[cfg(target_os = "windows")]
     let builder = {
@@ -75,23 +76,80 @@ pub async fn check_for_updates(app: tauri::AppHandle) -> Result<UpdateStatus, St
             handle.cleanup_before_exit();
         })
     };
-    let result = match builder.build() {
-        Ok(updater) => updater.check().await,
-        Err(error) => Err(error),
-    };
+    builder
+}
+
+async fn check_sources(app: &tauri::AppHandle) -> Result<Vec<Update>, String> {
+    let config: tauri_plugin_updater::Config = serde_json::from_value(
+        app.config()
+            .plugins
+            .0
+            .get("updater")
+            .cloned()
+            .unwrap_or_default(),
+    )
+    .map_err(|error| error.to_string())?;
+    let mut checks = tokio::task::JoinSet::new();
+    for (priority, endpoint) in config.endpoints.into_iter().enumerate() {
+        let app = app.clone();
+        checks.spawn(async move {
+            let result = match updater_builder(&app)
+                .endpoints(vec![endpoint])
+                .and_then(|builder| builder.build())
+            {
+                Ok(updater) => updater.check().await,
+                Err(error) => Err(error),
+            };
+            (priority, result)
+        });
+    }
+    let mut releases = Vec::new();
+    let mut checked = false;
+    let mut errors = Vec::new();
+    while let Some(result) = checks.join_next().await {
+        match result {
+            Ok((priority, Ok(update))) => {
+                checked = true;
+                if let Some(update) = update {
+                    releases.push((priority, update));
+                }
+            }
+            Ok((_, Err(error))) => errors.push(error.to_string()),
+            Err(error) => errors.push(error.to_string()),
+        }
+    }
+    if !checked || (releases.is_empty() && !errors.is_empty()) {
+        return Err(format!("更新服务检查未完成：{}", errors.join("；")));
+    }
+    // 镜像可能滞后；两个来源独立检查后，保留最新版本的所有下载对象。
+    let latest = latest_version(releases.iter().map(|(_, update)| update.version.as_str()));
+    releases.retain(|(_, update)| Some(semver::Version::parse(&update.version).unwrap()) == latest);
+    releases.sort_by_key(|(priority, _)| *priority);
+    Ok(releases.into_iter().map(|(_, update)| update).collect())
+}
+
+#[tauri::command]
+pub async fn check_for_updates(app: tauri::AppHandle) -> Result<UpdateStatus, String> {
+    let state = app.state::<UpdateState>();
+    let mut pending = state.0.try_lock().map_err(|_| "更新正在进行，请稍候。")?;
+    pending.status.phase = "checking";
+    pending.status.error = None;
+    pending.status.emit(&app);
+    let result = check_sources(&app).await;
     match result {
-        Ok(update) => {
+        Ok(updates) => {
+            let update = updates.first();
             pending.status = UpdateStatus {
                 phase: if update.is_some() {
                     "available"
                 } else {
                     "idle"
                 },
-                version: update.as_ref().map(|item| item.version.clone()),
-                notes: update.as_ref().and_then(|item| item.body.clone()),
+                version: update.map(|item| item.version.clone()),
+                notes: update.and_then(|item| item.body.clone()),
                 ..Default::default()
             };
-            pending.update = update;
+            pending.updates = updates;
         }
         Err(error) => pending.status.failed(format!("检查更新失败：{error}")),
     }
@@ -103,36 +161,53 @@ pub async fn check_for_updates(app: tauri::AppHandle) -> Result<UpdateStatus, St
 pub async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
     let state = app.state::<UpdateState>();
     let mut pending = state.0.try_lock().map_err(|_| "更新正在进行，请稍候。")?;
-    let mut update = pending.update.clone().ok_or("请先检查更新。")?;
-    update.timeout = Some(Duration::from_secs(600));
+    if pending.updates.is_empty() {
+        return Err("请先检查更新。".into());
+    }
     pending.status.phase = "downloading";
     pending.status.downloaded = 0;
     pending.status.total = None;
     pending.status.error = None;
     pending.status.emit(&app);
-    let mut last_progress = Instant::now();
-    let downloaded = update
-        .download(
-            |bytes, total| {
-                pending.status.downloaded += bytes as u64;
-                pending.status.total = total;
-                if last_progress.elapsed() >= Duration::from_millis(100) {
-                    pending.status.emit(&app);
-                    last_progress = Instant::now();
-                }
-            },
-            || {},
-        )
-        .await;
+    let mut downloaded = None;
+    let mut download_error = String::new();
+    for mut update in pending.updates.clone() {
+        update.timeout = Some(Duration::from_secs(600));
+        pending.status.downloaded = 0;
+        pending.status.total = None;
+        pending.status.emit(&app);
+        let mut last_progress = Instant::now();
+        let result = update
+            .download(
+                |bytes, total| {
+                    pending.status.downloaded += bytes as u64;
+                    pending.status.total = total;
+                    if last_progress.elapsed() >= Duration::from_millis(100) {
+                        pending.status.emit(&app);
+                        last_progress = Instant::now();
+                    }
+                },
+                || {},
+            )
+            .await;
+        match result {
+            Ok(bytes) => {
+                downloaded = Some((update, bytes));
+                break;
+            }
+            Err(error) => download_error = error.to_string(),
+        }
+    }
     let result = match downloaded {
-        Ok(bytes) => {
+        Some((update, bytes)) => {
             pending.status.phase = "installing";
             pending.status.emit(&app);
             tauri::async_runtime::spawn_blocking(move || update.install(bytes))
                 .await
                 .map_err(|error| error.to_string())?
+                .map_err(|error| error.to_string())
         }
-        Err(error) => Err(error),
+        None => Err(download_error),
     };
     match result {
         Ok(()) => {
@@ -176,6 +251,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn mirror_selection_uses_newest_semantic_version() {
+        assert_eq!(
+            latest_version(["0.1.2", "0.1.10"].into_iter())
+                .unwrap()
+                .to_string(),
+            "0.1.10"
+        );
+        assert_eq!(
+            latest_version(["0.1.10", "0.1.2"].into_iter())
+                .unwrap()
+                .to_string(),
+            "0.1.10"
+        );
+        assert!(latest_version(std::iter::empty()).is_none());
+    }
+
+    #[test]
     fn failed_check_preserves_available_update_for_retry() {
         let mut status = UpdateStatus {
             phase: "checking",
@@ -194,7 +286,7 @@ mod tests {
     #[test]
     fn pending_state_starts_idle_and_serializes_ui_contract() {
         let pending = PendingUpdate::default();
-        assert!(pending.update.is_none());
+        assert!(pending.updates.is_empty());
         let status = serde_json::to_value(pending.status).unwrap();
         assert_eq!(status["phase"], "idle");
         assert_eq!(status["downloaded"], 0);

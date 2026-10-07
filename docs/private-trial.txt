@@ -1,9 +1,9 @@
-open-richo-monitor 小范围试用
+RichoMonitor 小范围试用
 
 Mac 安装
 
-按芯片选择 Apple Silicon（aarch64）或 Intel（x64）安装包，macOS 13 或更新系统。
-打开 DMG，将 open-richo-monitor 拖入 Applications（应用程序），
+此 Mac 包用于 Apple Silicon，需要 macOS 13 或更新系统。
+打开 DMG，将 RichoMonitor 拖入 Applications（应用程序），
 弹出磁盘映像，再从应用程序打开。
 
 此试用包采用临时签名，尚未经过 Developer ID 签名与 Apple 公证。
@@ -11,6 +11,12 @@ Mac 安装
 尝试打开后进入系统设置 → 隐私与安全性，找到此应用并点击“仍要打开”，
 然后在确认窗口中点击“打开”。受单位管理的电脑可能禁止此操作。
 Apple 的操作说明：https://support.apple.com/zh-cn/102445
+
+Windows 安装
+
+运行 x64-setup.exe，按安装向导完成安装。本次已在 Windows 11 x64 虚拟机验证。
+此包尚无 Authenticode 签名，系统可能提示未知发布者，请确认来源后继续。
+Windows 10 与其他实机环境仍待补充验收。
 
 首次使用
 

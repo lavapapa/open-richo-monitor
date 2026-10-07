@@ -1,10 +1,10 @@
 # open-richo-monitor
 
-一个在用户设备上运行的理光库存提醒工具。macOS、Windows 桌面版与 Linux 命令行版共享监控核心；用户选择商品后，程序按时间计划检查上架和库存，通知渠道可按需配置。
+RichoMonitor 是在用户设备上运行的理光库存提醒工具，代码仓库名为 open-richo-monitor。macOS、Windows 桌面版与 Linux 命令行版共享监控核心；用户选择商品后，程序按时间计划检查上架和库存，通知渠道可按需配置。
 
 ## 一、桌面使用
 
-[下载安装包](https://github.com/lavapapa/open-richo-monitor/releases/latest)。Mac 分为 Apple Silicon 与 Intel 版本，需要 macOS 13 或更新版本；Windows 提供 x64 安装程序。应用沿用已有商品、配置和监控历史。首次引导默认选择官翻 GR III / IV 系列，通知步骤可以跳过；已有用户可在“其他设置 → 帮助引导”重新设置。
+[下载安装包](https://github.com/lavapapa/open-richo-monitor/releases/latest)，或使用 [Gitee 镜像](https://gitee.com/marvinfore/open-richo-monitor/releases/latest)。Mac 提供 Apple Silicon 版本，需要 macOS 13 或更新版本；Windows 提供 x64 安装程序。应用沿用已有商品、配置和监控历史。首次引导默认选择官翻 GR III / IV 系列，通知步骤可以跳过；已有用户可在“其他设置 → 帮助引导”重新设置。
 
 Mac 拖入 Applications 后打开，Windows 运行安装程序。当前采用 Mac 本地签名，Windows 安装包未做 Authenticode 签名，首次安装按系统提示确认可信来源。应用启动和运行期间每小时检查更新；发现新版后可在界面点击“下载并重启”。
 

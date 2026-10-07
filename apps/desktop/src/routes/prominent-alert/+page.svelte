@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
+  import appInfo from "../../../src-tauri/tauri.conf.json";
   import { desktopApi, prominentImageSrc, type ProminentAlert } from "$lib/desktop-api";
   import "$lib/theme.css";
   let alert: ProminentAlert | null = null;
@@ -58,7 +59,7 @@
         <div class="actions"><button class="dismiss" on:click={dismiss} disabled={closing}>完成</button></div>
       </div>
     </section>
-    <footer><span>open-richo-monitor</span>{#if !test}<time>{new Date(alert.at).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })} · 北京时间</time>{/if}</footer>
+    <footer><span>{appInfo.productName}</span>{#if !test}<time>{new Date(alert.at).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })} · 北京时间</time>{/if}</footer>
   {:else}<section class="loading"><p>{error ? "提醒暂时无法读取" : "正在读取商品提醒…"}</p></section>{/if}
   {#if error}<p class="error" role="alert">{error}</p>{/if}
   </div>

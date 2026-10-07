@@ -9,7 +9,7 @@ on:
         description: 构建平台（单平台仅生成工件）
         type: choice
         default: all
-        options: [all, macos-15, macos-15-intel, windows-2022]
+        options: [all, macos-15, windows-2022]
 
 permissions:
   contents: write
@@ -19,7 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON(inputs.platform && inputs.platform != 'all' && format('["{0}"]', inputs.platform) || '["macos-15","macos-15-intel","windows-2022"]') }}
+        os: ${{ fromJSON(inputs.platform && inputs.platform != 'all' && format('["{0}"]', inputs.platform) || '["macos-15","windows-2022"]') }}
     runs-on: ${{ matrix.os }}
     env:
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -52,7 +52,7 @@ jobs:
           cargo clean --profile dev --manifest-path apps/desktop/src-tauri/Cargo.toml
           df -h .
           npm run package:macos:dmg --prefix apps/desktop
-          node scripts/test-notification-runtime.mjs apps/desktop/src-tauri/target/release/bundle/macos/open-richo-monitor.app/Contents/MacOS/notification-runtime apps/desktop/src-tauri/target/release/bundle/macos/open-richo-monitor.app/Contents/Resources/notification-runtime.mjs
+          node scripts/test-notification-runtime.mjs apps/desktop/src-tauri/target/release/bundle/macos/RichoMonitor.app/Contents/MacOS/notification-runtime apps/desktop/src-tauri/target/release/bundle/macos/RichoMonitor.app/Contents/Resources/notification-runtime.mjs
       - name: Windows tests and package
         if: runner.os == 'Windows'
         shell: pwsh
@@ -89,4 +89,4 @@ jobs:
           gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v$VERSION" > /dev/null
           find dist/release -mindepth 2 -type f -exec cp {} dist/release/ \;
           node scripts/create-update-manifest.mjs dist/release
-          gh release create "v$VERSION" $(find dist/release -maxdepth 1 -type f) --verify-tag --draft --title "open-richo-monitor $VERSION" --generate-notes
+          gh release create "v$VERSION" $(find dist/release -maxdepth 1 -type f) --verify-tag --draft --title "RichoMonitor $VERSION" --generate-notes

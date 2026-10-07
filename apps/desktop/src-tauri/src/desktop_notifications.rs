@@ -321,14 +321,14 @@ pub(crate) async fn request_permission(app: &AppHandle) -> Result<PermissionStat
 
 #[cfg(target_os = "windows")]
 pub(crate) async fn show(app: &AppHandle, event: &RecentEvent) -> Result<(), String> {
-    send_windows(app, "open-richo-monitor", event.message.clone()).await
+    send_windows(app, "RichoMonitor", event.message.clone()).await
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub(crate) async fn show(app: &AppHandle, event: &RecentEvent) -> Result<(), String> {
     app.notification()
         .builder()
-        .title("open-richo-monitor")
+        .title("RichoMonitor")
         .body(&event.message)
         .show()
         .map_err(|error| error.to_string())
@@ -338,7 +338,7 @@ pub(crate) async fn show(app: &AppHandle, event: &RecentEvent) -> Result<(), Str
 pub(crate) async fn show_test(app: &AppHandle) -> Result<(), String> {
     send_windows(
         app,
-        "open-richo-monitor · 测试消息",
+        "RichoMonitor · 测试消息",
         "这是通知通道测试。请确认是否在通知中心看到此消息。".into(),
     )
     .await
@@ -348,7 +348,7 @@ pub(crate) async fn show_test(app: &AppHandle) -> Result<(), String> {
 pub(crate) async fn show_test(app: &AppHandle) -> Result<(), String> {
     app.notification()
         .builder()
-        .title("open-richo-monitor · 测试消息")
+        .title("RichoMonitor · 测试消息")
         .body("这是通知通道测试。请确认是否在通知中心看到此消息。")
         .show()
         .map_err(|error| error.to_string())
@@ -404,13 +404,13 @@ async fn send(title: &'static str, body: String) -> Result<(), String> {
 
 #[cfg(target_os = "macos")]
 pub(crate) async fn show(_app: &AppHandle, event: &RecentEvent) -> Result<(), String> {
-    send("open-richo-monitor", event.message.clone()).await
+    send("RichoMonitor", event.message.clone()).await
 }
 
 #[cfg(target_os = "macos")]
 pub(crate) async fn show_test(_app: &AppHandle) -> Result<(), String> {
     send(
-        "open-richo-monitor · 测试消息",
+        "RichoMonitor · 测试消息",
         "这是通知通道测试。请确认是否在通知中心看到此消息。".into(),
     )
     .await

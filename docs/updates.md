@@ -1,6 +1,6 @@
 # 更新与发布
 
-桌面端通过 Tauri 官方 updater 读取 GitHub Release 的 `latest.json`。启动时检查，运行期间由原生任务每小时检查；睡眠后跳过积压的检查。发现新版本后显示提示，用户点击“下载并重启”才开始下载和安装。
+桌面端通过 Tauri 官方 updater 分别读取 Gitee 和 GitHub Release 的 `latest.json`。启动时检查，运行期间由原生任务每小时检查；睡眠后跳过积压的检查。两个来源并行检查，选择语义版本较新的发布；同版优先从 Gitee 下载，失败时尝试 GitHub。来源地址由 `tauri.conf.json` 的 `plugins.updater.endpoints` 定义。发现新版本后显示提示，用户点击“下载并重启”才开始下载和安装。
 
 检查与下载使用官方插件内置的系统静态 HTTP/HTTPS 代理支持，独立于商城请求的代理池开关。PAC 与自动发现代理暂未支持，检查失败时可从项目发布页手动下载安装包。
 
@@ -12,15 +12,19 @@
 
 ## 二、构件
 
-每个版本分别发布 Apple Silicon、Intel Mac 与 Windows x64。`scripts/create-update-manifest.mjs` 从配置版本和实际 `.sig` 生成平台条目。Mac 更新使用完整 `.app.tar.gz`，Windows 更新使用同一 NSIS `.exe`；DMG 供手动安装。架构选择由官方插件完成。
+每个版本分别发布 Apple Silicon 与 Windows x64。`scripts/create-update-manifest.mjs` 从配置版本和实际 `.sig` 生成平台条目。Mac 更新使用完整 `.app.tar.gz`，Windows 更新使用同一 NSIS `.exe`；DMG 供手动安装。架构选择由官方插件完成。
 
 原生程序、通知脚本、Bun 可执行文件与第三方声明作为一个安装单元交付。更换 Bun 时按 `scripts/build-notification-runtime.mjs` 的冻结版本更新源码资料，并在目标架构执行 `scripts/test-notification-runtime.mjs`。Mac 构建通过 `scripts/build-macos.mjs` 恢复 Bun 原厂签名、签外层 App，然后重新生成并签署更新归档；不得使用恢复签名前的归档。
 
 ## 三、发版
 
-在 `apps/desktop/src-tauri/tauri.conf.json` 更新版本，同时同步 desktop 的 Cargo/npm 版本，提交并建立同名 `v版本` 标签。读取 [验收清单](release-checklist.md)，完成相关平台验收；通过 `.github/workflows/release.yml` 构建三个平台并上传到草稿 Release。确认全部安装包、签名与更新清单可用后发布该 Release，并将其设为 latest。更新清单与构件应一次发布，避免指向尚未上传的文件。
+在 `apps/desktop/src-tauri/tauri.conf.json` 更新版本，同时同步 desktop 的 Cargo/npm 版本，提交并建立同名 `v版本` 标签。读取 [验收清单](release-checklist.md)，完成相关平台验收；通过 `.github/workflows/release.yml` 构建两个平台并上传到草稿 Release。确认全部安装包、签名与更新清单可用后发布该 Release，并将其设为 latest。更新清单与构件应一次发布，避免指向尚未上传的文件。
 
 手动运行流程时可选择单个平台重建工件；该模式不创建 Release。macOS 测试结束后清理 debug 编译缓存，为正式构建和 DMG 临时卷保留磁盘空间。
+
+Gitee 的公开镜像为 `marvinfore/open-richo-monitor`。同步 GitHub 的主分支与版本标签，在同名发行版上传完整安装包、更新构件和签名。将相同构件放入独立的镜像清单目录，运行 `node scripts/create-update-manifest.mjs 目录 "" https://gitee.com/marvinfore/open-richo-monitor/releases/download/v版本`，生成指向 Gitee 附件的 `latest.json`；全部附件齐全后一起创建发行版。公开后用未登录请求检查 `releases/download/latest/latest.json` 及其中的构件地址。源码同步与发行版附件分别处理；浏览器登录或发布凭据留在发布者一侧，App 无需 Gitee 账号或访问令牌。
+
+Gitee 发行页面列明普通仓库单附件 100M、总附件 1G 的容量限制。每次发布核对实际额度与构件大小，按需清理过时镜像附件；GitHub 保留历史发行版。镜像滞后、清单损坏或单一来源不可用时，另一个来源独立参与检查；两个来源都失败时显示检查错误并保留已有更新对象供重试。
 
 更新私钥保存在发布者的受限本地目录与 GitHub Actions 的 `TAURI_SIGNING_PRIVATE_KEY` secret，密码使用 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`；源码中的 updater `pubkey` 用来验证更新。妥善备份私钥，沿用同一密钥签后续版本。更新签名独立于 macOS Developer ID 和 Windows Authenticode；操作系统首次安装限制仍按平台规则处理。
 

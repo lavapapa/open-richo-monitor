@@ -3276,7 +3276,7 @@ dependencies = [
 
 [[package]]
 name = "ricoh-monitor-desktop"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "block2",
  "objc2",
@@ -3285,6 +3285,7 @@ dependencies = [
  "objc2-user-notifications",
  "ricoh-monitor-core",
  "rusqlite",
+ "semver",
  "serde",
  "serde_json",
  "tauri",
