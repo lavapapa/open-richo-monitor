@@ -1001,7 +1001,7 @@
   {/if}
 
   <main class:status-page={page === "status"} bind:this={mainElement}>
-    <UpdateNotice mode="banner" status={updateStatus} checked={updateChecked} onCheck={checkUpdates} onInstall={installUpdate} />
+    {#if page !== "settings"}<UpdateNotice mode="banner" status={updateStatus} checked={updateChecked} onCheck={checkUpdates} onInstall={installUpdate} />{/if}
     {#if snapshot?.systemNotificationsEnabled && snapshot.platform?.notificationPermission === "denied"}<p class="notice error" role="alert">系统通知权限已关闭。请在系统设置中开启本应用通知，返回后点击“检查权限”。{#if page !== "notifications"}<button on:click={() => navigate("notifications")}>通知设置</button>{/if}</p>{/if}
     {#if error}<p class="notice error" role="alert">{error} <button on:click={refresh}>重试</button></p>{/if}
     {#if notice}<p class:success={notice.kind === "success"} class:error={notice.kind === "error"} class="notice toast" role={notice.kind === "error" ? "alert" : "status"}>{notice.text}<button aria-label="关闭" on:click={() => notice = null}>×</button></p>{/if}

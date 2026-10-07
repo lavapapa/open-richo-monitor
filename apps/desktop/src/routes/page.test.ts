@@ -1141,8 +1141,8 @@ describe("桌面主流程", () => {
     await fireEvent.click(screen.getByRole("button", { name: "其他设置" }));
     await fireEvent.click(screen.getAllByRole("button", { name: "下载并重启" })[0]);
     expect((await screen.findByRole("alert")).textContent).toBe("更新失败：签名校验失败");
-    expect(screen.getByText("发现新版本 0.2.0")).toBeTruthy();
-    expect(screen.getAllByRole("button", { name: "下载并重启" })).toHaveLength(2);
+    expect(screen.getByText(/发现新版本 0\.2\.0/)).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: "下载并重启" })).toHaveLength(1);
   });
 
   it("安装期间到达较新原生事件时，失败回调不覆盖该状态", async () => {

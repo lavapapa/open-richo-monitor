@@ -39,13 +39,12 @@
   <div class="settings-row update-settings">
     <div>
       <strong>应用更新</strong>
-      {#if status.error}<p class="failure" role="alert">{status.error}</p>
-      {:else if checking}<p role="status">正在检查更新…</p>
+      {#if status.error}<p class="failure" role="alert">{status.error}</p>{/if}
+      {#if checking}<p role="status">正在检查更新…</p>
       {:else if status.phase === "available"}<p>发现新版本{status.version ? ` ${status.version}` : ""}。安装时会短暂中断监控与通知连接，重启后恢复。</p>
       {:else if status.phase === "downloading"}<p role="status">正在下载更新：{status.total ? `${Math.min(100, Math.floor(status.downloaded / status.total * 100))}% · ` : ""}{bytes(status.downloaded)}{status.total ? ` / ${bytes(status.total)}` : ""}</p>
       {:else if status.phase === "installing"}<p role="status">正在安装更新，应用即将重启。</p>
-      {:else if checked}<p>当前已是最新版本。</p>
-      {:else}<p>自动检查更新，每小时检查一次。</p>{/if}
+      {:else if !status.error}<p>{checked ? "当前已是最新版本。" : "自动检查更新，每小时检查一次。"}</p>{/if}
       {#if status.phase === "available" && status.notes}<details><summary>更新内容</summary><pre>{status.notes}</pre></details>{/if}
     </div>
     <div class="actions">
