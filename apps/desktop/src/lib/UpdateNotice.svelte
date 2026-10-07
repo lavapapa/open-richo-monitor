@@ -28,6 +28,7 @@
         {:else if status.phase === "installing"}
           <p>安装完成后应用将自动重启。</p>
         {:else}
+          {#if status.error}<p class="failure" role="alert">{status.error}</p>{/if}
           <p>安装时会短暂中断监控与通知连接，重启后恢复。</p>
         {/if}
       </div>

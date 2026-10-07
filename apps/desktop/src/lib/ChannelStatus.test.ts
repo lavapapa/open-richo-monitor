@@ -16,8 +16,8 @@ it("一个状态标签同时表达启用、连接、测试，连接和测试变�
 });
 
 it("保留个人可识别的账号称呼，缺少群名时隐藏群 ID", () => {
-  render(RecipientChip, { props: { target: { id: "QinHaiMing", kind: "user", label: "QinHaiMing" } } });
-  expect(screen.getByText("QinHaiMing")).toBeTruthy();
+  render(RecipientChip, { props: { target: { id: "fixture-user", kind: "user", label: "示例用户" } } });
+  expect(screen.getByText("示例用户")).toBeTruthy();
   render(RecipientChip, { props: { target: { id: "opaque-group", kind: "chat", label: "opaque-group" } } });
   expect(screen.getByText("群聊")).toBeTruthy();
   expect(screen.queryByText("opaque-group")).toBeNull();

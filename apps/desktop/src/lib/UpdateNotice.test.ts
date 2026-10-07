@@ -17,6 +17,12 @@ it("顶部更新条显示版本和安装中断提示，不铺开更新说明", (
   expect(screen.getByRole("button", { name: "下载并重启" })).toBeTruthy();
 });
 
+it("顶部更新条完整显示可重试的下载错误", () => {
+  const error = `签名校验失败：${"证书信息不匹配；".repeat(40)}`;
+  render(UpdateNotice, { props: { mode: "banner", status: status({ phase: "available", version: "0.2.0", error }), onCheck: vi.fn(), onInstall: vi.fn() } });
+  expect(screen.getByRole("alert").textContent).toBe(error);
+});
+
 it("设置页通过展开项显示完整更新说明，成功检查显示最新状态", async () => {
   const notes = "修复连接稳定性\n第二行详细说明";
   const view = render(UpdateNotice, { props: { mode: "settings", checked: true, status: status({ phase: "available", version: "0.2.0", notes }), onCheck: vi.fn(), onInstall: vi.fn() } });

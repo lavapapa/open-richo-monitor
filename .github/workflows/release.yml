@@ -75,6 +75,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           VERSION=$(node -p 'JSON.parse(require("fs").readFileSync("apps/desktop/src-tauri/tauri.conf.json")).version')
+          test "$GITHUB_REF" = "refs/tags/v$VERSION"
           gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v$VERSION" > /dev/null
           find dist/release -mindepth 2 -type f -exec cp {} dist/release/ \;
           node scripts/create-update-manifest.mjs dist/release
