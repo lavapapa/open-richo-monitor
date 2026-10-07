@@ -1,0 +1,17 @@
+{
+  "code": 0,
+  "data": {
+    "storeInfo": {
+      "id": 65,
+      "storeName": "官翻品 GR IIIx",
+      "isShow": 1,
+      "stock": 0,
+      "price": 6749.0,
+      "image": "https://ricn.oss-cn-hangzhou.aliyuncs.com/yshop/uploads/attach/2024/04/20240410/813a3ddb4e490145a1c59e5b66b13435.jpg",
+      "sliderImage": "https://example.com/gallery-65.jpg",
+      "unitName": "台",
+      "isMemberCard": 0,
+      "memberCardDays": 0
+    }
+  }
+}

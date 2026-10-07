@@ -1,0 +1,17 @@
+{
+  "code": 0,
+  "data": {
+    "storeInfo": {
+      "id": 38,
+      "storeName": "RICOH GR III Diary Edition 日记版",
+      "isShow": 1,
+      "stock": 0,
+      "price": 6799.0,
+      "image": "https://ricn.oss-cn-hangzhou.aliyuncs.com/yshop/uploads/attach/2023/01/20230129/9d2935d0df59b1dd50a1489789ea6098.jpg",
+      "sliderImage": "https://example.com/gallery-38.jpg",
+      "unitName": "台",
+      "isMemberCard": 0,
+      "memberCardDays": 0
+    }
+  }
+}

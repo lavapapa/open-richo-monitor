@@ -1,0 +1,9 @@
+商品图片与品牌素材
+
+static/catalog 的图片来自理光商城公开商品 API，原始 URL 见
+src/lib/catalog-preview.json 的 metadata.imageUrl。图片与商品品牌归
+各自权利人持有，源未提供开放内容许可证，项目 MIT 不覆盖这些图片。
+
+通知平台图标来自各平台官方资源，用于识别通知渠道，来源记录见
+static/providers/sources.json。GitHub 标识来自其官方品牌资源。
+各品牌商标与图标归各自权利人持有，本应用与理光及通知平台无隶属关系。

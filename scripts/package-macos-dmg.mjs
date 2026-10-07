@@ -1,0 +1,31 @@
+import { execFileSync } from 'node:child_process';
+import { cpSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+if (process.platform !== 'darwin' || !['arm64', 'x64'].includes(process.arch)) throw new Error('请在 Mac 上制作 DMG。');
+const root = fileURLToPath(new URL('../', import.meta.url));
+const tauri = path.join(root, 'apps/desktop/src-tauri');
+const config = JSON.parse(readFileSync(path.join(tauri, 'tauri.conf.json'), 'utf8'));
+const target = process.env.CARGO_TARGET_DIR ? path.resolve(tauri, process.env.CARGO_TARGET_DIR) : path.join(tauri, 'target');
+const app = path.join(target, 'release/bundle/macos', `${config.productName}.app`);
+execFileSync('/usr/bin/codesign', ['--verify', '--deep', '--strict', app], { stdio: 'inherit' });
+const arch = process.arch === 'arm64' ? 'aarch64' : 'x64';
+const destination = path.join(root, `dist/macos-${arch}`);
+mkdirSync(destination, { recursive: true });
+const dmg = path.join(destination, `${config.productName}_${config.version}_${arch}.dmg`);
+const staging = mkdtempSync(path.join(tmpdir(), 'ricoh-trial-dmg-'));
+try {
+  cpSync(app, path.join(staging, `${config.productName}.app`), { recursive: true });
+  symlinkSync('/Applications', path.join(staging, 'Applications'));
+  cpSync(path.join(root, 'docs/private-trial.txt'), path.join(staging, '安装说明.txt'));
+  cpSync(path.join(root, 'LICENSE'), path.join(staging, 'LICENSE.txt'));
+  execFileSync('/usr/bin/hdiutil', ['create', '-ov', '-volname', config.productName, '-srcfolder', staging, '-format', 'UDZO', dmg], { stdio: 'inherit' });
+  const update = `${config.productName}_${config.version}_${arch}.app.tar.gz`;
+  cpSync(`${app}.tar.gz`, path.join(destination, update));
+  cpSync(`${app}.tar.gz.sig`, path.join(destination, `${update}.sig`));
+} finally {
+  rmSync(staging, { recursive: true, force: true });
+}
+console.log(dmg);

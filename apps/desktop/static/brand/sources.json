@@ -1,0 +1,34 @@
+{
+  "assets": [
+    {
+      "file": "app-icon.png",
+      "generator": "OpenAI imagegen",
+      "sourceFile": "exec-4f998c1e-522d-4712-b051-7abce8e73276.png",
+      "prompt": "Use case: logo-brand. Create one production-ready desktop application icon, a single centered square icon tile on a genuinely transparent outside canvas. Use the attached reference screenshot for the broad, bold geometric red letterform language and warm brand red, and the attached app screenshot for the dark charcoal visual environment. A near-black charcoal rounded-square tile, clean flat finish, generous smooth corner radius. Center a striking minimal combined RM monogram in saturated brand red, constructed from thick geometric strokes with subtle visual suggestion of a mail envelope or monitoring pulse through negative space. The R and M must remain discernible at 32 px. Calm, premium, sharp silhouette, balanced margins, no text below, no full brand name, no slogan, no fine detail, no gradient, no bevel, no photography, no additional symbols, no watermark. Transparent exterior around rounded tile. Square 1:1 app icon suitable for 1024x1024 master output."
+    },
+    {
+      "file": "wordmark.png",
+      "usage": "历史素材；当前界面使用 rm-wordmark.svg。",
+      "generator": "OpenAI imagegen",
+      "sourceFile": "exec-539d9fbf-7ff1-47e1-acc8-0bb32cf19627.png",
+      "prompt": "Create a production-ready transparent PNG wordmark for a desktop app sidebar. Reference: broad heavy geometric sans-serif red uppercase letterforms and light-gray subordinate line from the supplied RICOH screenshot. Text exactly RICHO, letter sequence R I C H O, with open.mail.monitor below, left-aligned. Compact horizontal two-line composition, suitable for 155 px display. Flat crisp edges, no shadow, glow, panel, extra symbol or lettering. Final refinement: preserve the two-line composition and exact text; lighten subtitle to #ADB3B8 for a #101416 dark surface; keep genuine transparent exterior and remove edge speckles.",
+      "conversion": "Trimmed transparent margins to 2060×590; no manual recoloring."
+    },
+    {
+      "file": "header-camera.webp",
+      "generator": "OpenAI imagegen",
+      "sourceFile": "exec-54531460-5fbc-4e3a-ad65-20f6cc7cdcbf.png",
+      "prompt": "Use case: product-mockup. Generate ONE standalone background asset from the attached UI reference. The reference is for art direction only, do NOT reproduce any UI, text, charts, borders or buttons. Create the black compact camera top-plate macro photograph visible in the TOP RIGHT of the reference screen: close-up of knurled command dials, shutter and finely grained black camera body, precise tangible matte graphite material, very low-key studio side light. Wide landscape 3:1 composition, camera detail only in right 65%, left 35% near-solid very dark charcoal #101416, gradually shaded naturally. No text/logos/lettering/brand marks. Camera cropped as an intentional macro detail, matching the selected reference. No full product floating in frame. Intended as dark desktop-app header backdrop with white controls layered separately. Subtle visible texture, no dramatic glare, no colored glow, no gradient art, no UI screenshot.",
+      "conversion": "Generated PNG converted to WebP at quality 88."
+    },
+    {
+      "file": "camera-illustration.webp",
+      "generator": "OpenAI imagegen",
+      "sourceFile": "exec-0126699e-d567-41b4-be00-0563d39667d8.png",
+      "conversion": "Generated PNG converted to WebP for the desktop interface.",
+      "prompt": "Use case: stylized-concept. Create a premium stylized 3D editorial illustration asset for a desktop app called open-richo-mail-monitor, a compact camera stock-notification utility. A single complete compact street-photography camera inspired by the proportions of the Ricoh GR series, not a photograph and no brand logos or lettering. Entire camera fully visible, centered, generous 16% transparent safe padding on all four sides, no cropping, no cut-off shadow. Slight three-quarter front view, gently tilted only 8 degrees, low-perspective orthographic product sculpture. Graphite textured magnesium body, muted forest-green enamel details, precision brushed-silver shutter control, beautiful deep smoked optical glass with restrained green reflections. Soft sculptural realism with simplified intentional forms, tactile soft studio light from upper left, refined industrial design, small soft contact shadow only. Visually clear when displayed at 180px wide in an app sidebar. Transparent background, no platform, no scene, no UI, no text, no cables, no extra objects. Output one isolated camera."
+    }
+  ],
+  "wordmark": { "file": "rm-wordmark.svg", "generator": "独立几何字形 SVG", "reference": "用户提供的宽厚几何字形与红色参考", "text": "RM", "subtitle": "open-richo-monitor" },
+  "notice": "相机与应用图标素材由 AI 生成，当前侧栏使用独立 RM 字标；本应用与理光官方无隶属关系。"
+}

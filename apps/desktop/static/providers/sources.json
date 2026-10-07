@@ -1,0 +1,8 @@
+{
+  "weixin.png": {
+    "page": "https://pc.weixin.qq.com/",
+    "asset": "https://res.wx.qq.com/a/wx_fed/assets/res/OTE0YTAw.png",
+    "usage": "微信通知渠道标识；原始图像，未修改配色或形状。",
+    "owner": "Tencent / Weixin"
+  }
+}

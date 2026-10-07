@@ -1,0 +1,80 @@
+name: Build release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-15-intel, windows-2022]
+    runs-on: ${{ matrix.os }}
+    env:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Install dependencies
+        shell: bash
+        run: |
+          npm ci --prefix apps/notification-runtime
+          npm ci --prefix apps/desktop
+      - name: macOS tests and package
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          npm test --prefix apps/notification-runtime
+          npm run check --prefix apps/desktop
+          npm test --prefix apps/desktop
+          cargo test --locked --manifest-path crates/core/Cargo.toml
+          npm run build:notifications --prefix apps/desktop
+          cargo test --locked --manifest-path apps/desktop/src-tauri/Cargo.toml
+          npm run package:macos:dmg --prefix apps/desktop
+          node scripts/test-notification-runtime.mjs apps/desktop/src-tauri/target/release/bundle/macos/open-richo-monitor.app/Contents/MacOS/notification-runtime
+      - name: Windows tests and package
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/build-windows.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.os }}
+          path: |
+            dist/**/*.dmg
+            dist/**/*.app.tar.gz
+            dist/**/*.exe
+            dist/**/*.sig
+          if-no-files-found: error
+
+  draft:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist/release
+          merge-multiple: true
+      - name: Prepare release draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=$(node -p 'JSON.parse(require("fs").readFileSync("apps/desktop/src-tauri/tauri.conf.json")).version')
+          gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v$VERSION" > /dev/null
+          node scripts/create-update-manifest.mjs dist/release
+          gh release create "v$VERSION" dist/release/* --verify-tag --draft --title "open-richo-monitor $VERSION" --generate-notes

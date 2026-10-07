@@ -1,0 +1,16 @@
+[Unit]
+Description=Ricoh Monitor
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300s
+StartLimitBurst=5
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/ricoh-monitor run
+Restart=on-failure
+RestartSec=10s
+TimeoutStopSec=10s
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,17 @@
+{
+  "code": 0,
+  "data": {
+    "storeInfo": {
+      "id": 108,
+      "storeName": "GR SPACE VIP会员卡",
+      "isShow": 1,
+      "stock": 0,
+      "price": 199.0,
+      "image": "https://ricn.oss-cn-hangzhou.aliyuncs.com/yshop/uploads/attach/2024/10/20241029/87aabcb0e5f32c12a279427c6e2915b9.jpg",
+      "sliderImage": "https://example.com/gallery-108.jpg",
+      "unitName": "张",
+      "isMemberCard": 1,
+      "memberCardDays": 365
+    }
+  }
+}

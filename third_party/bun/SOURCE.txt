@@ -1,0 +1,34 @@
+通知运行时源码与重新构建
+
+对应源码与重建资料的独立可选下载：
+https://github.com/lavapapa/open-richo-monitor/releases/download/bun-v1.4.2-source/bun-v1.4.2-third-party-source.zip
+备用下载：
+https://pan.quark.cn/s/23680e3a57e0
+其中的 bun-v1.4.2-third-party-source.zip 包含 Bun、其锁定的
+JavaScriptCore/WebKit、TinyCC 对应源码与重建说明，安装本应用无需下载。
+Bun 本身采用 MIT，JavaScriptCore/WebKit 采用 LGPL-2，TinyCC 采用 LGPL-2.1。
+
+本应用随附未经修改的 Bun 可执行文件；具体构建版本由
+scripts/build-notification-runtime.mjs 的 requiredVersion 定义，并可运行
+notification-runtime --version 查看。Bun 与应用主程序分离。
+
+Bun 的完整对应源码及构建文件：
+https://github.com/oven-sh/bun/tree/bun-v1.4.2
+https://github.com/oven-sh/bun/archive/refs/tags/bun-v1.4.2.tar.gz
+许可证：随附 notification-runtime-NOTICES.txt 的 third_party/bun/LICENSE.md。
+
+对应的 JavaScriptCore/WebKit 版本由上述 Bun 源码的
+scripts/build/deps/webkit.ts 中 WEBKIT_VERSION 指定。依照 Bun 官方许可说明，
+在 Bun 源码目录执行以下命令取得对应 WebKit 源码并重新构建：
+
+git clone https://github.com/oven-sh/WebKit vendor/WebKit
+bun sync-webkit-source
+bun run build:local
+
+构建说明：
+https://github.com/oven-sh/bun/blob/bun-v1.4.2/CONTRIBUTING.md
+
+重新构建的 Bun 可替换 macOS App 的 Contents/MacOS/notification-runtime，
+或 Windows 安装目录的 notification-runtime.exe；通知脚本保持独立。
+修改 macOS App 后需重新签名，并保留 Bun 的 JIT 权限；开发者构建过程见
+scripts/build-macos-arm64.mjs。随附第三方代码仍适用各自许可证。

@@ -1,0 +1,17 @@
+{
+  "code": 0,
+  "data": {
+    "storeInfo": {
+      "id": 130,
+      "storeName": "官翻品 GR IV",
+      "isShow": 1,
+      "stock": 0,
+      "price": 8819.0,
+      "image": "https://ricn.oss-cn-hangzhou.aliyuncs.com/ac56586e954897917fe4dae385b4a8651ab02a23683a4966f40d6028cfa0e59b.jpg",
+      "sliderImage": "https://example.com/gallery-130.jpg",
+      "unitName": "台",
+      "isMemberCard": 0,
+      "memberCardDays": 0
+    }
+  }
+}

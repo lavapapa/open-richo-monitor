@@ -1,0 +1,34 @@
+# macOS
+.DS_Store
+
+# JavaScript build output
+node_modules/
+**/build/
+**/.svelte-kit/
+**/dist/
+
+# Tauri and Rust output
+**/target/
+**/src-tauri/gen/schemas/
+**/src-tauri/binaries/notification-runtime-*
+**/src-tauri/binaries/notification-runtime.mjs
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.log
+
+# Signing material
+*.p12
+*.mobileprovision
+*.provisionprofile
+*.key
+*.sig
+
+# Local verification history
+docs/verification/
+docs/*-2026-*.md

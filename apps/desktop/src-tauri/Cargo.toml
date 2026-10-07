@@ -1,0 +1,52 @@
+[package]
+name = "ricoh-monitor-desktop"
+version = "0.1.1"
+description = "理光库存监控桌面端"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "ricoh_monitor_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "protocol-asset", "macos-private-api"] }
+tauri-plugin-notification = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-single-instance = "2"
+tokio = { version = "1.53.1", features = ["sync"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ricoh-monitor-core = { path = "../../../crates/core" }
+url = "2"
+tauri-plugin-updater = "2"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-registry = "0.6"
+windows = { version = "=0.62.2", features = ["Data_Xml_Dom", "UI_Notifications", "Win32_Networking_WinHttp", "Win32_UI_WindowsAndMessaging", "Win32_UI_Shell", "Win32_UI_Input_KeyboardAndMouse"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["NSWindow", "NSScreen", "NSPanel", "NSApplication", "NSRunningApplication", "NSResponder", "NSView", "NSColor", "NSGraphics"] }
+objc2-foundation = "0.3"
+objc2-user-notifications = { version = "0.3", default-features = false, features = ["UNUserNotificationCenter", "UNNotificationSettings", "UNNotificationRequest", "UNNotificationContent", "UNNotificationTrigger", "UNNotification", "block2"] }
+
+[dev-dependencies]
+rusqlite = { version = "0.37", features = ["bundled"] }
+
+
+# Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true
