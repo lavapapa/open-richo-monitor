@@ -64,7 +64,7 @@ app.subscribe() -> broadcast::Receiver<AppSnapshot>
 app.run() -> Result<(), AppError>
 ```
 
-`MonitoringAction` 为 `Start | Pause | Resume | Stop | Restart`，`ScanAction` 为 `Pause | Resume | Cancel`。Core 存储单一 `RunIntent { Stopped, Running, Paused }`，新库默认 `Stopped`；`Start/Resume/Restart` 写 `Running`，`Pause` 写 `Paused`，`Stop` 写 `Stopped`。桌面常驻进程及 Linux 前台 `run` 持有运行循环；独立 CLI 控制进程直接读写同一 SQLite intent，status 读取同一运行快照，不通过 socket、JSON-RPC 或临时 IPC。`run` 与 systemd 自动重启读取并遵从意愿。桌面新进程由 `MonitorApp::apply_startup_monitoring` 应用 `AppConfig.autoStartMonitoring`：开启且已完成设置时写入运行意愿，关闭时以停止状态打开；运行仍受监控计划约束。关窗、托盘重新显示和重复启动不再次应用该偏好，暂停状态因此保留。`set_auto_start_monitoring` 保存未来启动偏好，当前运行意愿保持不变；登录后启动由操作系统独立管理。正常退出保持当前意愿及有效待发送记录。HTTP 客户端按唯一 `AppConfig.useSystemProxy` 配置系统代理或直连；系统通知权限、登录启动等 OS 能力仍属平台适配。
+`MonitoringAction` 为 `Start | Pause | Resume | Stop | Restart`，`ScanAction` 为 `Pause | Resume | Cancel`。Core 存储单一 `RunIntent { Stopped, Running, Paused }`，新库默认 `Stopped`；`Start/Resume/Restart` 写 `Running`，`Pause` 写 `Paused`，`Stop` 写 `Stopped`。桌面常驻进程及 Linux 前台 `run` 持有运行循环；独立 CLI 控制进程直接读写同一 SQLite intent，status 读取同一运行快照，不通过 socket、JSON-RPC 或临时 IPC。`run` 与 systemd 自动重启读取并遵从意愿。桌面新进程由 `MonitorApp::apply_startup_monitoring` 应用 `AppConfig.autoStartMonitoring`：开启且已完成设置时写入运行意愿，关闭时以停止状态打开；运行仍受监控计划约束。关窗、托盘重新显示和重复启动不再次应用该偏好，暂停状态因此保留。`set_auto_start_monitoring` 保存未来启动偏好，当前运行意愿保持不变；登录后启动由操作系统独立管理。正常退出保持当前意愿及有效待发送记录。HTTP 客户端按唯一 `AppConfig.useSystemProxy` 配置系统代理或直连；Windows 库存、图片及通知请求按实际目标复用 WinHTTP 的 PAC、WPAD 与静态代理解析，解析在可取消的宿主子进程中执行并计入请求时限；其他系统沿用各自配置读取。系统通知权限、登录启动等 OS 能力仍属平台适配。
 
 `RuntimeSnapshot.lastSuccessAt` 表示当前已启用商品最近一次持久化成功观察，直接由这些商品的 `observation.checkedAt` 求最新值。暂停或重启后保留已有成功时间，未取得成功观察时为空；停用商品不参与该值。Core 快照提供这一事实，前端无需自行重建或缓存。
 
@@ -98,7 +98,7 @@ Rust 类型由 Core 定义并直接 serde；TypeScript 类型逐字段描述同�
 
 `ChannelInput { id, name, providerId, values, subscriptions, bindingId?, targets? }` 仅实现反序列化，不实现 `Debug`/序列化。通知平台为飞书、企业微信、钉钉、微信，均支持扫码绑定。`bindingId` 引用 Core 持有的授权结果，`values` 用于手动配置官方 SDK 凭据；`targets` 为用户选择的通知会话，每项为 `{ id, kind: "user" | "chat", label }`。凭据写入同一个 `monitor.sqlite3` 的 `credentials` 表，使用 `(kind, reference)` 区分渠道和代理凭据。Core 不读取 Keychain 或独立凭据文件。Secret 和凭据引用不进入 `ChannelView`、快照、日志、诊断和配置导出；`configuredFieldKeys` 仅列出已配置字段名。渠道记录 `enabled` 由独立 set_enabled 方法维护。
 
-首次扫码发起时，Core 先登记等待绑定状态，后台空闲配置保留正在准备授权的通知进程；初始请求失败后清除该等待状态。桌面绑定命令为 `begin_channel_binding`、`begin_channel_rebinding`、`channel_binding_status`、`submit_channel_binding_verification`、`cancel_channel_binding`。公开绑定状态包含二维码地址、授权阶段、实际 `connectionStatus`、机器人入口 `botUrl`、钉钉应用名称 `appName`、会话与可获得的 `botName`，不含凭据。钉钉授权后查询本应用元信息，应用名称作为绑定资料返回，机器人名称用于渠道默认命名；未取得接收对象时保留官方机器人管理入口，引导用户发送私信并自动选中已识别的个人对象。授权完成后连接标记按真实连接状态显示，长连接就绪才显示绿勾；钉钉已收到私信却未获得 `senderStaffId` 时明确提示改用机器人所属组织账号或群聊，保留空目标并继续监听有效回调。`detect_notification_channel_groups` 与 `detect_binding_groups` 返回可选择会话；飞书通过官方群列表接口分页发现机器人所在群，其他平台从连接收到的会话事件收集已知群，发现范围由平台接口决定。`ChannelView` 另含 `botName`、`connectionStatus`、`targets`、`selectedTargets` 与 `recipientDeliveries`，分别描述平台机器人名称、连接、已知会话、选择和逐会话投递结果。`ChannelTest.recipients` 返回逐会话测试结果，全部会话被接受才将整体结果记为成功。
+首次扫码发起时，Core 先登记等待绑定状态，后台空闲配置保留正在准备授权的通知进程；初始请求失败后清除该等待状态。桌面绑定命令为 `begin_channel_binding`、`begin_channel_rebinding`、`channel_binding_status`、`submit_channel_binding_verification`、`cancel_channel_binding`。公开绑定状态包含二维码地址、授权阶段、实际 `connectionStatus`、机器人入口 `botUrl`、钉钉应用名称 `appName`、会话与可获得的 `botName`，不含凭据。钉钉授权后查询本应用元信息，应用名称作为绑定资料返回，机器人名称用于渠道默认命名；未取得接收对象时保留官方机器人管理入口，说明平台尚未返回对象并保留手动配置；已识别的个人对象按既有规则选择。名称查询权限不足与接收对象缺失分别记录。授权完成后连接标记按真实连接状态显示，长连接就绪才显示绿勾；钉钉已收到私信却未获得 `senderStaffId` 时明确提示改用机器人所属组织账号或群聊，保留空目标并继续监听有效回调。`detect_notification_channel_groups` 与 `detect_binding_groups` 返回可选择会话；飞书通过官方群列表接口分页发现机器人所在群，其他平台从连接收到的会话事件收集已知群，发现范围由平台接口决定。`ChannelView` 另含 `botName`、`connectionStatus`、`targets`、`selectedTargets` 与 `recipientDeliveries`，分别描述平台机器人名称、连接、已知会话、选择和逐会话投递结果。`ChannelTest.recipients` 返回逐会话测试结果，全部会话被接受才将整体结果记为成功。
 
 飞书扫码保存用户身份及服务域名，验证机器人资料后启动长连接；注册使用明确的权限模板。个人消息与进入机器人会话事件保存 `open_id` 对应的 `chat_id`，已有会话地址优先使用，没有会话地址时使用扫码身份发送。微信账号启动先完成 `notifystart`，就绪后可向绑定账号直接测试；发送携带对应接收人已有的上下文，缺少上下文时由平台判定发送结果。非零 `ret` 或 `errcode` 保留真实拒绝码。账号停止发送 `notifystop`，重开等待旧连接停止完成；扫码保存为渠道时复用在线连接。微信要求手机配对码时进入 `needs_verification`，通过 `submit_channel_binding_verification` 提交并继续原扫码流程。企业微信按操作系统提供扫码平台参数，消息和进入会话事件收集接收对象。钉钉逐接收人检查无效与限流名单，业务拒绝不记为测试成功。
 
@@ -144,7 +144,7 @@ Tauri 保留 `MonitorApp` 状态、serde 快照广播、系统通知、托盘菜
 
 macOS 的权限查询、测试通知与监控通知统一使用 `UNUserNotificationCenter`。命令层等待提交回调并返回系统错误，应用前台展示由通知 delegate 负责；界面仅在权限尚未允许时显示授权状态。
 
-Windows 桌面版与 macOS 共用界面和业务用例。登录后启动使用当前用户的登录启动项，保存已安装应用的完整路径，启用与停用后的状态返回界面。目录由资源管理器打开，HTTP／HTTPS 链接交给默认浏览器；系统通知使用与安装器一致的应用标识，并在查询权限或投递前注册当前用户的通知应用信息与协议激活入口。首次权限查询缺少系统通知记录时，无横幅初始化后清除初始化消息，再读取真实权限；点击通知通过单实例入口显示主窗口，删除开始菜单快捷方式后仍可查询权限与投递，Windows 禁用或策略状态按真实权限返回。应用关闭窗口后保留系统托盘入口，退出时等待共享监控任务结束。
+Windows 桌面版与 macOS 共用界面和业务用例。初始窗口外框超过当前显示器工作区时使用系统最大化，首次引导及页面操作区保持可见；工作区扣除任务栏，并按实际像素比较。登录后启动使用当前用户的登录启动项，保存已安装应用的完整路径，启用与停用后的状态返回界面。目录由资源管理器打开，HTTP／HTTPS 链接交给默认浏览器；系统通知使用与安装器一致的应用标识，并在查询权限或投递前注册当前用户的通知应用信息与协议激活入口。首次权限查询缺少系统通知记录时，无横幅初始化后清除初始化消息，再读取真实权限；点击通知通过单实例入口显示主窗口，删除开始菜单快捷方式后仍可查询权限与投递，Windows 禁用或策略状态按真实权限返回。应用关闭窗口后保留系统托盘入口，退出时等待共享监控任务结束。
 
 Linux CLI 保留交互式设置、状态查看、商品/渠道/代理操作、扫描、测试、前台运行控制和 systemd unit 输出，直接调用相同 `MonitorApp`。删除 Unix socket/JSON-RPC 服务及其 framing、客户端管理和第二套命令协议；systemd 由 CLI 输出的 unit 管理进程，不建立第二个业务后台服务。
 

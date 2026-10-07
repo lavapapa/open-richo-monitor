@@ -43,8 +43,12 @@ ${StrLoc}
 
 !define MANUFACTURER "{{manufacturer}}"
 !define PRODUCTNAME "{{product_name}}"
-; 安装身份沿用既有版本，显示名称由 PRODUCTNAME 控制。
-!define INSTALLATION_ID "open-richo-monitor"
+; 正式安装身份固定；独立测试身份使用自己的注册项与卸载记录。
+!if "{{bundle_id}}" == "dev.ricohmonitor.desktop"
+  !define INSTALLATION_ID "open-richo-monitor"
+!else
+  !define INSTALLATION_ID "{{bundle_id}}"
+!endif
 !define VERSION "{{version}}"
 !define VERSIONWITHBUILD "{{version_with_build}}"
 !define HOMEPAGE "{{homepage}}"

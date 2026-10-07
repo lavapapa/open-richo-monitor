@@ -1,0 +1,68 @@
+name: Shared desktop regression
+on:
+  pull_request:
+  push:
+    branches: [main, 'codex/**']
+permissions:
+  contents: read
+jobs:
+  regression:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    env:
+      CARGO_BUILD_JOBS: 2
+      TAURI_CONFIG: '{"identifier":"dev.ricohmonitor.windowsqa","productName":"RichoMonitor Windows QA"}'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Shared tests and production runtime
+        shell: bash
+        run: |
+          set -e
+          npm ci --prefix apps/notification-runtime
+          npm ci --prefix apps/desktop
+          npm test --prefix apps/notification-runtime
+          npm run check --prefix apps/desktop
+          npm test --prefix apps/desktop -- --maxWorkers=2
+          npm run build --prefix apps/desktop
+          npm run build:notifications --prefix apps/desktop
+          cargo test --locked --manifest-path crates/core/Cargo.toml -- --test-threads=2
+          cargo test --locked --manifest-path apps/desktop/src-tauri/Cargo.toml --features tauri/custom-protocol --lib -- --test-threads=2
+      - name: Production Windows runtime smoke
+        if: runner.os == 'Windows'
+        run: node scripts/test-notification-runtime.mjs apps/desktop/src-tauri/binaries/notification-runtime-x86_64-pc-windows-msvc.exe
+      - name: Build Windows QA app
+        if: runner.os == 'Windows'
+        run: cargo build --locked --manifest-path apps/desktop/src-tauri/Cargo.toml --features tauri/custom-protocol
+      - name: Install official WebDriver tools
+        if: runner.os == 'Windows'
+        run: |
+          cargo install tauri-driver --locked
+          cargo install --git https://github.com/chippers/msedgedriver-tool
+          & "$env:USERPROFILE/.cargo/bin/msedgedriver-tool.exe"
+      - name: Windows WebView and native commands
+        if: runner.os == 'Windows'
+        run: |
+          $driver = Start-Process "$env:USERPROFILE/.cargo/bin/tauri-driver.exe" -ArgumentList "--native-driver", "$PWD/msedgedriver.exe" -PassThru
+          try {
+            node scripts/test-windows-desktop.mjs apps/desktop/src-tauri/target/debug/ricoh-monitor-desktop.exe
+            if ($LASTEXITCODE -ne 0) { throw 'Windows desktop verification failed' }
+          } finally {
+            Get-CimInstance Win32_Process -Filter "ParentProcessId=$($driver.Id)" | ForEach-Object { Stop-Process -Id $_.ProcessId -ErrorAction SilentlyContinue }
+            Stop-Process -Id $driver.Id -ErrorAction SilentlyContinue
+          }
+      - uses: actions/upload-artifact@v4
+        if: always() && runner.os == 'Windows'
+        with:
+          name: windows-desktop-verification
+          path: dist/windows-verification/

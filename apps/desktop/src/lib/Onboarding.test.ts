@@ -29,7 +29,7 @@ function mount(overrides: Partial<DesktopSnapshot> = {}, accepted = true) {
       { id: "wecom", name: "企业微信", documentationUrl: null, fields: [] },
       { id: "dingtalk", name: "钉钉", documentationUrl: null, fields: [] },
     ], proxies: [], scan: null, recentEvents: [], recentChecks: [],
-    platform: { loginStartEnabled: false, notificationPermission: "prompt", notificationPermissionError: null, projectUrl: null, tutorialUrl: null, feedbackUrl: null },
+    platform: { loginStartEnabled: false, notificationPermission: "prompt", notificationPermissionError: null, notificationSettingsAvailable: false, projectUrl: null, tutorialUrl: null, feedbackUrl: null },
     ...overrides,
   };
   const callbacks = {
@@ -219,7 +219,7 @@ describe("三步首次设置", () => {
   });
 
   it("登录后启动读取实际状态，完成时提交勾选值", async () => {
-    const view = mount({ platform: { loginStartEnabled: true, notificationPermission: "granted", notificationPermissionError: null, projectUrl: null, tutorialUrl: null, feedbackUrl: null } });
+    const view = mount({ platform: { loginStartEnabled: true, notificationPermission: "granted", notificationPermissionError: null, notificationSettingsAvailable: false, projectUrl: null, tutorialUrl: null, feedbackUrl: null } });
     await next();
     await fireEvent.click(screen.getByRole("button", { name: "跳过" }));
     const loginStart = screen.getByRole("checkbox", { name: "登录后启动" }) as HTMLInputElement;
@@ -253,7 +253,7 @@ describe("三步首次设置", () => {
 
   it("完成页使用独立画布的现成礼花效果，并在关闭时清理", async () => {
     confetti.create.mockClear(); confetti.fire.mockClear(); confetti.reset.mockClear();
-    const view = mount({ systemNotificationsEnabled: true, platform: { loginStartEnabled: false, notificationPermission: "granted", notificationPermissionError: null, projectUrl: null, tutorialUrl: null, feedbackUrl: null } });
+    const view = mount({ systemNotificationsEnabled: true, platform: { loginStartEnabled: false, notificationPermission: "granted", notificationPermissionError: null, notificationSettingsAvailable: false, projectUrl: null, tutorialUrl: null, feedbackUrl: null } });
     await next();
     await fireEvent.click(screen.getByRole("button", { name: "下一步" }));
     expect(screen.getByText("商品上架或补货时，会立即提醒你。")).toBeTruthy();

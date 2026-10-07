@@ -151,7 +151,14 @@ fn forward_snapshots(backend: Arc<DesktopBackend>, app: tauri::AppHandle) {
             update_tray_status(&app, initial.runtime.state);
         }
         loop {
-            let snapshot = match snapshots.recv().await {
+            for diagnostic in backend.app.take_notification_diagnostics() {
+                desktop_backend::write_log(&backend.data_dir, &format!("通知诊断 {diagnostic}"));
+            }
+            let next = tokio::select! {
+                next = snapshots.recv() => next,
+                _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => continue,
+            };
+            let snapshot = match next {
                 Ok(snapshot) => snapshot,
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
@@ -236,6 +243,10 @@ fn forward_notification_proxy(backend: Arc<DesktopBackend>) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(target_os = "windows")]
+    if ricoh_monitor_core::system_proxy::windows::run_helper() {
+        return;
+    }
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
             show_main(app)
@@ -290,7 +301,9 @@ pub fn run() {
             desktop_backend::set_onboarding_products,
             desktop_backend::set_product_prominent_alert,
             prominent_alert::subscribe_prominent_alert,
+            prominent_alert::get_prominent_alert,
             prominent_alert::show_prominent_alert,
+            prominent_alert::confirm_prominent_alert_frame,
             prominent_alert::dismiss_prominent_alert,
             prominent_alert::test_prominent_alert,
             desktop_backend::create_diagnostic_preview,
@@ -323,6 +336,17 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            #[cfg(target_os = "windows")]
+            if let Some(window) = app.get_webview_window("main") {
+                if let Some(monitor) = window.current_monitor()? {
+                    let outer = window.outer_size()?;
+                    let work = monitor.work_area().size;
+                    // 小屏幕或高缩放时，初始窗口须留在任务栏之外的工作区内。
+                    if outer.width > work.width || outer.height > work.height {
+                        window.maximize()?;
+                    }
+                }
+            }
             #[cfg(target_os = "macos")]
             desktop_notifications::install_foreground_delegate();
             let data_dir = app.path().app_data_dir().map_err(std::io::Error::other)?;
@@ -348,7 +372,7 @@ pub fn run() {
                 backend.app.set_notification_runtime_arguments(
                     notification_runtime_path::arguments(
                         &app.path().resource_dir().map_err(std::io::Error::other)?,
-                    ),
+                    )?,
                 );
             }
             app.manage(backend.clone());

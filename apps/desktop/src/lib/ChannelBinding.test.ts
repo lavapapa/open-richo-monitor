@@ -78,7 +78,7 @@ describe("通知扫码连接", () => {
     api.beginChannelBinding.mockResolvedValue({ ...waiting, provider: "dingtalk", status: "complete", connectionStatus: "ready", targets: [], botUrl, appName: "授权创建的应用名称" });
     render(ChannelBinding, { providerId: "dingtalk", providerName: "钉钉", defaultName: "钉钉 1" });
     await flush();
-    expect(screen.getByText("打开机器人发条私信，返回这里继续")).toBeTruthy();
+    expect(screen.getByText("平台尚未返回接收对象。可使用手动配置添加。")).toBeTruthy();
     expect(screen.queryByText(/钉钉尚未返回机器人名称/)).toBeNull();
     await fireEvent.click(screen.getByRole("button", { name: "查看钉钉机器人" }));
     expect(api.openExternalUrl).toHaveBeenCalledExactlyOnceWith(botUrl);
@@ -339,7 +339,7 @@ describe("通知扫码连接", () => {
     await vi.advanceTimersByTimeAsync(2000);
     expect(screen.getByRole("status").textContent).toContain("用飞书扫码创建，打开机器人后返回");
     await vi.advanceTimersByTimeAsync(2000);
-    expect(screen.getByRole("status").textContent).toContain("给机器人发条私信，返回这里继续");
+    expect(screen.getByRole("status").textContent).toContain("平台尚未返回接收对象");
     await vi.advanceTimersByTimeAsync(2000);
     expect((screen.getByRole("checkbox", { name: "摄影群 群聊" }) as HTMLInputElement).checked).toBe(false);
     expect(qr.toDataURL).toHaveBeenCalledOnce();

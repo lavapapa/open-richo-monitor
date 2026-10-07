@@ -8,22 +8,24 @@
   let closing = false;
   let presentationId = 0;
   let closeButton: HTMLButtonElement;
-  let productImage: HTMLImageElement;
   $: image = alert ? prominentImageSrc(alert) ?? alert.imageUrl : null;
   $: test = !!alert && alert.eventId < 0;
-  async function receive(next: ProminentAlert & { presentationId: number }) {
+  async function receive(next: ProminentAlert & { presentationId: number; waitForFrame: boolean }) {
     presentationId = next.presentationId;
     alert = next;
     closing = false;
     error = "";
     await tick();
-    // 本地图片解码属于实际渲染；远端图片保持异步，避免网络阻塞提醒。
-    if (next.imagePath && productImage?.decode) {
-      try { await productImage.decode(); } catch { await tick(); }
-    }
+    // 必要内容已提交；图片由 WebView 异步绘制。
     if (presentationId !== next.presentationId) return;
     closeButton?.focus();
-    try { await desktopApi.showProminentAlert(next.eventId, next.presentationId); }
+    try {
+      await desktopApi.showProminentAlert(next.eventId, next.presentationId);
+      if (next.waitForFrame) {
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+        if (presentationId === next.presentationId) await desktopApi.confirmProminentAlertFrame(next.eventId, next.presentationId);
+      }
+    }
     catch (cause) { if (presentationId === next.presentationId) error = cause instanceof Error ? cause.message : "显示提醒失败。"; }
   }
   async function dismiss() {
@@ -51,7 +53,7 @@
   <header><img src="/brand/rm-wordmark.svg" alt="RM" /><button bind:this={closeButton} aria-label="关闭" title="关闭（Esc、空格或回车）" on:click={dismiss} disabled={closing || !alert}>ESC 关闭</button></header>
   {#if alert}
     <section aria-labelledby="alert-title">
-      <div class="product-visual">{#if image}<img bind:this={productImage} src={image} alt={alert.name} on:error={() => image = null} />{:else}<span>商品图片待更新</span>{/if}</div>
+      <div class="product-visual">{#if image}<img src={image} alt={alert.name} on:error={() => image = null} />{:else}<span>商品图片待更新</span>{/if}</div>
       <div class="product-information">
         <p class="eyebrow">库存提醒</p>
         <h1 id="alert-title">{alert.name}</h1>

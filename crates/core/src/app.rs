@@ -758,6 +758,10 @@ impl MonitorApp {
         self.notification_runtime.set_arguments(arguments);
     }
 
+    pub fn take_notification_diagnostics(&self) -> Vec<serde_json::Value> {
+        self.notification_runtime.take_diagnostics()
+    }
+
     pub fn set_notification_proxy_url(&self, url: Result<Option<String>, String>) {
         *self.notification_proxy_url.lock().unwrap() = url;
     }

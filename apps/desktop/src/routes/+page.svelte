@@ -1074,6 +1074,7 @@
             <h2>系统通知</h2>
             <label class="switch"><span>启用</span><input aria-label="启用系统通知" type="checkbox" disabled={pendingToggles.has("system-notifications")} checked={snapshot?.systemNotificationsEnabled ?? false} on:change={(event) => saveToggle("system-notifications", event.currentTarget, snapshot?.systemNotificationsEnabled ?? false, (enabled) => desktopApi.setSystemNotificationsEnabled(enabled))} /></label>
             <small>权限：{snapshot?.platform?.notificationPermission === "granted" ? "已允许" : snapshot?.platform?.notificationPermission === "denied" ? "已关闭" : snapshot?.platform?.notificationPermission === "unavailable" ? "暂时无法读取" : snapshot?.platform?.notificationPermission === "prompt" ? "首次发送时询问" : snapshot?.platform?.notificationPermission === "prompt_with_rationale" ? "需要授权" : "尚未确认"}</small>
+            {#if snapshot?.platform?.notificationSettingsAvailable}<button class="secondary" disabled={busy} on:click={() => checkNotificationPermission(true)}>系统通知设置</button>{/if}
             {#if snapshot?.platform?.notificationPermission === "prompt" || snapshot?.platform?.notificationPermission === "prompt_with_rationale"}<button class="secondary" disabled={busy} on:click={() => checkNotificationPermission(true)}>申请权限</button>{/if}
             <button class="secondary" disabled={busy} on:click={() => checkNotificationPermission()}>检查权限</button>
             <button class="secondary" disabled={busy} on:click={sendSystemTest}>发送测试</button>

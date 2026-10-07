@@ -1,10 +1,10 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/svelte";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import source from "./+page.svelte?raw";
-const api = vi.hoisted(() => ({ subscribeProminentAlert: vi.fn(), showProminentAlert: vi.fn(), dismissProminentAlert: vi.fn(), openExternalUrl: vi.fn() }));
+const api = vi.hoisted(() => ({ subscribeProminentAlert: vi.fn(), showProminentAlert: vi.fn(), confirmProminentAlertFrame: vi.fn(), dismissProminentAlert: vi.fn(), openExternalUrl: vi.fn() }));
 vi.mock("$lib/desktop-api", () => ({ desktopApi: api, prominentImageSrc: (alert: { imagePath: string | null }) => alert.imagePath }));
 import Page from "./+page.svelte";
-beforeEach(() => { vi.resetAllMocks(); api.dismissProminentAlert.mockResolvedValue({ message: null }); api.showProminentAlert.mockResolvedValue(undefined); });
+beforeEach(() => { vi.resetAllMocks(); api.dismissProminentAlert.mockResolvedValue({ message: null }); api.showProminentAlert.mockResolvedValue(undefined); api.confirmProminentAlertFrame.mockResolvedValue(undefined); });
 afterEach(cleanup);
 
 it("突出提醒遮罩始终完全不透明", () => {
@@ -81,9 +81,8 @@ it("旧交付的显示失败不覆盖下一条成功提醒", async () => {
   expect(screen.getByRole("button", { name: "完成" }).hasAttribute("disabled")).toBe(false);
 });
 
-it("本地商品图片解码后显示，准备渲染时不额外查询商品", async () => {
-  let finishDecode!: () => void;
-  const decode = vi.fn(() => new Promise<void>((resolve) => { finishDecode = resolve; }));
+it("本地图片解码未完成也立即显示必要内容", async () => {
+  const decode = vi.fn(() => new Promise<void>(() => {}));
   Object.defineProperty(HTMLImageElement.prototype, "decode", { configurable: true, value: decode });
   try {
     api.subscribeProminentAlert.mockImplementation(async (receive) => {
@@ -91,10 +90,24 @@ it("本地商品图片解码后显示，准备渲染时不额外查询商品", a
       return () => {};
     });
     render(Page);
-    await waitFor(() => expect(decode).toHaveBeenCalledTimes(1));
-    expect(screen.getByRole("img", { name: "GR IV" }).getAttribute("src")).toBe("/cached/31.jpg");
-    expect(api.showProminentAlert).not.toHaveBeenCalled();
-    finishDecode();
     await waitFor(() => expect(api.showProminentAlert).toHaveBeenCalledExactlyOnceWith(31, 1));
+    expect(screen.getByRole("img", { name: "GR IV" }).getAttribute("src")).toBe("/cached/31.jpg");
+    expect(screen.getByRole("heading", { name: "GR IV" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "关闭" }).hasAttribute("disabled")).toBe(false);
   } finally { delete (HTMLImageElement.prototype as any).decode; }
+});
+
+
+it("显示命令尚未完成时不确认当前页面帧", async () => {
+  let finishShow!: () => void;
+  api.showProminentAlert.mockImplementation(() => new Promise<void>((resolve) => { finishShow = resolve; }));
+  api.subscribeProminentAlert.mockImplementation(async (receive) => {
+    receive({ eventId: 77, presentationId: 3, waitForFrame: true, name: "GR IV", stock: 2, price: null, imagePath: null, imageUrl: null, at: "" });
+    return () => {};
+  });
+  render(Page);
+  await waitFor(() => expect(finishShow).toBeTypeOf("function"));
+  expect(api.confirmProminentAlertFrame).not.toHaveBeenCalled();
+  finishShow();
+  await waitFor(() => expect(api.confirmProminentAlertFrame).toHaveBeenCalledExactlyOnceWith(77, 3));
 });

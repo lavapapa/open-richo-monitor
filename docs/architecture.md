@@ -16,7 +16,7 @@
 
 `apps/desktop/src-tauri/src/desktop_backend.rs` 将桌面命令转换为 `MonitorApp` 用例调用，提供成功结果、错误和带平台信息的快照。原生文件对话框、登录启动、系统通知权限、日志目录和更新由这一层处理。`test_system_notification` 在一次命令内完成权限查询、必要的申请、缓存更新与发送，前端按返回结果展示反馈。
 
-`src-tauri/src/lib.rs` 管理应用生命周期、后台工作任务、托盘与状态转发。关闭窗口保持后台运行，主窗口打开入口共用显示、解除最小化和聚焦；macOS 重新打开事件恢复主窗口，退出应用等待核心收尾；后台任务的退出或 panic 发布故障状态并阻止继续提交运行操作。系统通知独立消费核心待投递记录，提交回调不会阻塞快照转发。系统通知在 `desktop_notifications.rs` 按目标平台调用原生接口，静态代理由 `notification_proxy.rs` 读取，通知模块位置由 `notification_runtime_path.rs` 按调试或安装布局定位。平台构建配置将相应可执行文件打入安装包。CLI 在 `crates/cli/src/main.rs` 将参数转换为相同核心用例。CLI 命令实例通过共享数据库提交运行意愿和配置，运行实例读取并应用变更。
+`src-tauri/src/lib.rs` 管理应用生命周期、后台工作任务、托盘与状态转发。关闭窗口保持后台运行，主窗口打开入口共用显示、解除最小化和聚焦；macOS 重新打开事件恢复主窗口，退出应用等待核心收尾；后台任务的退出或 panic 发布故障状态并阻止继续提交运行操作。系统通知独立消费核心待投递记录，提交回调不会阻塞快照转发。系统通知在 `desktop_notifications.rs` 按目标平台调用原生接口，通知代理由 `notification_proxy.rs` 读取，Windows 目标解析复用 Core 的 `system_proxy.rs`，通知模块位置由 `notification_runtime_path.rs` 按调试或安装布局定位。平台构建配置将相应可执行文件打入安装包。CLI 在 `crates/cli/src/main.rs` 将参数转换为相同核心用例。CLI 命令实例通过共享数据库提交运行意愿和配置，运行实例读取并应用变更。
 
 ### 1.3 核心
 
@@ -28,7 +28,7 @@
 
 macOS 与 Windows 使用同一套 Core、Svelte 界面和 Bun 通知脚本。Rust 的 `cfg(target_os)` 将系统通知、代理读取、登录启动和突出提醒交给对应系统 API；目标 Tauri 配置选择运行时二进制、资源和安装程序。功能修复与业务测试进入共同源码，平台验收分别运行。平台 Git 分支会让同一业务修改产生两份维护工作，当前工程沿用框架适配边界。
 
-桌面后台运行由登录用户的应用进程承担：关窗保留托盘与任务，显式退出等待核心及通知子进程收尾，登录启动由系统用户启动项恢复。无人登录运行的 Windows 系统服务需要独立的宿主和状态边界，当前桌面范围不包含这项能力。突出提醒在启动时预加载隐藏页面，复用窗口并通过 Tauri Channel 直接传递商品；Core 事务唤醒专用消费者，页面内容和本地图片准备后交由原生主线程显示。具体队列与显示确认规则见[引导与突出提醒契约](onboarding-alert-core.md)。原生通知采用 macOS UserNotifications 与 Windows WinRT；通知系统代理使用 macOS scutil 与 Windows 当前用户 WinHTTP 配置，无法处理的自动代理配置返回明确结果。
+桌面后台运行由登录用户的应用进程承担：关窗保留托盘与任务，显式退出等待核心及通知子进程收尾，登录启动由系统用户启动项恢复。无人登录运行的 Windows 系统服务需要独立的宿主和状态边界，当前桌面范围不包含这项能力。突出提醒在启动时预加载隐藏页面，复用窗口并通过 Tauri Channel 直接传递商品；Core 事务唤醒专用消费者，必要页面内容提交后交由原生主线程显示，图片异步加载。具体队列与显示确认规则见[引导与突出提醒契约](onboarding-alert-core.md)。原生通知采用 macOS UserNotifications 与 Windows WinRT；通知系统代理使用 macOS scutil 与 Windows 当前用户 WinHTTP 配置；Windows 按实际 HTTP、HTTPS 与 WebSocket 目标解析 PAC、WPAD、静态代理和绕过规则。解析在独立短命子进程执行并有界取消，运行程序按目标短时缓存结果；显式 PAC 失败返回错误。macOS 无法处理的自动代理配置返回明确结果。
 
 ## 二、时序
 

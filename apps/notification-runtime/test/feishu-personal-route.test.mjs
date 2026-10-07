@@ -44,13 +44,14 @@ test('飞书个人回调保留单聊 chat_id，发送与重开均使用真实会
   } finally { await runtime.close(); }
 });
 
-test('飞书首次用户发送 230101 给出建立单聊指引，不重复发请求', async () => {
+test('飞书拒绝首次发送保留错误码与平台检查项，不推定私信原因', async () => {
   const { runtime, sent } = fixture();
   try {
     const result = await runtime.send({ accountId: 'personal', target: { id: 'ou_owner', kind: 'user' }, text: '库存测试' });
     assert.equal(result.outcome, 'failed');
     assert.match(result.message, /230101/);
-    assert.match(result.message, /打开机器人.*发送一条/);
+    assert.match(result.message, /可用范围/);
+    assert.doesNotMatch(result.message, /私信/);
     assert.equal(sent.length, 1);
   } finally { await runtime.close(); }
 });

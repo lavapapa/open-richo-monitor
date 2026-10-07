@@ -1,5 +1,6 @@
 import readline from 'node:readline';
-import { registerApp, Client as FeishuClient, WSClient as FeishuWSClient, EventDispatcher as FeishuEventDispatcher } from '@larksuiteoapi/node-sdk';
+import { WINDOWS_SYSTEM_PROXY, nativeProxyResolver, systemProxyAgent } from './windows-system-proxy.mjs';
+import { defaultHttpInstance as feishuRegistrationHttp, registerApp, Client as FeishuClient, WSClient as FeishuWSClient, EventDispatcher as FeishuEventDispatcher } from '@larksuiteoapi/node-sdk';
 import { WSClient as WecomWSClient } from '@wecom/aibot-node-sdk';
 import { createWeixinTextApi } from './weixin-text-api.mjs';
 import { pathToFileURL } from 'node:url';
@@ -35,14 +36,23 @@ const trimWeixinContext = (credentials) => {
 };
 
 export class Runtime {
-  constructor({ fetchImpl = globalThis.fetch, register = registerApp, emit = write, sleepImpl = sleep, sdk = {} } = {}) {
+  constructor({ fetchImpl = globalThis.fetch, register = registerApp, emit = write, sleepImpl = sleep, sdk = {}, resolveProxy = nativeProxyResolver() } = {}) {
+    this.resolveProxy = resolveProxy;
     this.baseFetch = fetchImpl;
     this.originalGlobalFetch = globalThis.fetch;
     this.originalAxiosDefaults = { proxy: axios.defaults.proxy, httpAgent: axios.defaults.httpAgent, httpsAgent: axios.defaults.httpsAgent };
+    this.originalRegistrationDefaults = { proxy: feishuRegistrationHttp.defaults.proxy, httpAgent: feishuRegistrationHttp.defaults.httpAgent, httpsAgent: feishuRegistrationHttp.defaults.httpsAgent };
     this.requestStorage = new AsyncLocalStorage();
     this.fetch = (input, options = {}) => {
       const requestSignal = this.requestStorage.getStore();
       const signal = requestSignal && options.signal ? AbortSignal.any([requestSignal, options.signal]) : requestSignal ?? options.signal;
+      if (this.proxyUrl === WINDOWS_SYSTEM_PROXY) {
+        return axios.request({ url: String(input), method: options.method ?? 'GET', headers: options.headers,
+          data: options.body, signal, responseType: 'arraybuffer', validateStatus: () => true, proxy: false,
+          httpAgent: systemProxyAgent(this.resolveProxy, signal), httpsAgent: systemProxyAgent(this.resolveProxy, signal),
+        }).then((response) => new Response([204, 205, 304].includes(response.status) ? null : response.data,
+          { status: response.status, headers: response.headers }));
+      }
       return fetchImpl(input, {
         ...options,
         ...(signal ? { signal } : {}),
@@ -50,6 +60,7 @@ export class Runtime {
       });
     };
     this.axiosInterceptorId = axios.interceptors.request.use((config) => this.applyRequestSignal(config));
+    this.registrationInterceptorId = feishuRegistrationHttp.interceptors.request.use((config) => this.applyRequestSignal(config));
     this.register = register;
     this.emit = emit;
     this.sleep = sleepImpl;
@@ -75,7 +86,9 @@ export class Runtime {
     const scope = this.requestStorage.getStore();
     const signal = scope && config.timeout ? AbortSignal.any([scope, AbortSignal.timeout(config.timeout)]) : scope;
     if (signal) config.signal = config.signal ? AbortSignal.any([signal, config.signal]) : signal;
-    if (signal && this.proxyAgent) {
+    if (this.proxyUrl === WINDOWS_SYSTEM_PROXY) {
+      config.httpAgent = config.httpsAgent = systemProxyAgent(this.resolveProxy, config.signal);
+    } else if (signal && this.proxyAgent) {
       const agent = new HttpsProxyAgent.HttpsProxyAgent({ ...this.proxyAgent.proxy, signal: config.signal });
       config.httpAgent = agent;
       config.httpsAgent = agent;
@@ -84,12 +97,25 @@ export class Runtime {
   }
 
   accountProxyAgent(account) {
+    if (this.proxyUrl === WINDOWS_SYSTEM_PROXY) return systemProxyAgent(this.resolveProxy, account.abort.signal);
     return this.proxyAgent ? new HttpsProxyAgent.HttpsProxyAgent({ ...this.proxyAgent.proxy, signal: account.abort.signal }) : undefined;
   }
 
   event(event, data) {
     if (event === 'account') this.accountChanges.emit(`account:${data.id}`);
     this.emit({ event, data });
+  }
+
+  diagnostic(provider, stage, details = {}) {
+    const code = details.providerCode ?? details.response?.data?.code ?? details.response?.data?.errcode;
+    const requestId = details.requestId ?? details.response?.headers?.['x-tt-logid'] ?? details.response?.headers?.['x-acs-request-id'];
+    this.event('diagnostic', { provider, stage,
+      ...((numericCode(code) || ['Forbidden.AccessDenied.AccessTokenPermissionDenied', 'staffId.notExisted', 'robot.oto.notExist', 'chatbotId.notAllow.sendOTO'].includes(code)) ? { providerCode: String(code) } : {}),
+      ...([401, 403, 429, 500, 502, 503, 504].includes(details.status ?? details.response?.status) ? { httpStatus: details.status ?? details.response.status } : {}),
+      ...(typeof requestId === 'string' && /^[a-zA-Z0-9_-]{8,64}$/.test(requestId) ? { requestId } : {}),
+      ...(details.outcome ? { outcome: details.outcome } : {}),
+      ...(Number.isFinite(details.durationMs) ? { durationMs: Math.round(details.durationMs) } : {}),
+    });
   }
 
   async call(method, params = {}) {
@@ -112,7 +138,8 @@ export class Runtime {
     this.network = network;
     this.proxyUrl = network === 'system_proxy' ? proxyUrl : undefined;
     globalThis.fetch = this.fetch;
-    this.proxyAgent = this.proxyUrl ? new HttpsProxyAgent.HttpsProxyAgent(this.proxyUrl) : undefined;
+    this.proxyAgent = this.proxyUrl === WINDOWS_SYSTEM_PROXY ? systemProxyAgent(this.resolveProxy)
+      : this.proxyUrl ? new HttpsProxyAgent.HttpsProxyAgent(this.proxyUrl) : undefined;
     this.httpInstance = axios.create(this.proxyUrl
       ? { proxy: false, timeout: 15_000, httpAgent: this.proxyAgent, httpsAgent: this.proxyAgent }
       : { proxy: false, timeout: 15_000 });
@@ -130,6 +157,7 @@ export class Runtime {
     axios.defaults.proxy = false;
     axios.defaults.httpAgent = this.proxyAgent;
     axios.defaults.httpsAgent = this.proxyAgent;
+    Object.assign(feishuRegistrationHttp.defaults, { proxy: false, httpAgent: this.proxyAgent, httpsAgent: this.proxyAgent });
     const next = new Map();
     for (const account of accounts) {
       if (!account.id || !account.provider || !account.credentials || !Array.isArray(account.targets)) throw new TypeError('账号配置不完整');
@@ -185,7 +213,7 @@ export class Runtime {
       account.retryAt = Date.now() + 30_000;
       account.message = '连接失败，请检查账号授权或网络';
       if (!account.supervisor && account.status === 'failed') this.startSupervisor(account);
-      process.stderr.write(`[notification-runtime] ${account.provider} connection failed\n`);
+      this.diagnostic(account.provider, 'connect', error);
     }
     if (account.status === 'failed' && !account.supervisor) {
       account.retryAt ??= Date.now() + 30_000;
@@ -783,7 +811,15 @@ export class Runtime {
         signal: AbortSignal.any([binding.controller.signal, account.abort.signal, AbortSignal.timeout(15_000)]),
       });
       const app = await response.json();
-      if (!response.ok || !this.isCurrent(account) || this.bindings.get(binding.id) !== binding || !app.name) return;
+      if (!this.isCurrent(account) || this.bindings.get(binding.id) !== binding) return;
+      if (!response.ok || !app.name) {
+        this.diagnostic('dingtalk', 'metadata', { status: response.status, providerCode: app.code, requestId: app.requestid });
+        binding.message = app.code === 'Forbidden.AccessDenied.AccessTokenPermissionDenied'
+          ? '机器人已连接；名称查询缺少应用信息读取权限。'
+          : '机器人已连接；平台尚未返回名称信息。';
+        this.event('binding', this.publicBinding(binding));
+        return;
+      }
       account.credentials.appName = app.name;
       this.event('credentials', { accountId: account.id, credentials: { appName: app.name } });
       this.event('binding', this.publicBinding(binding));
@@ -861,15 +897,19 @@ export class Runtime {
           : account.provider === 'wecom' ? this.sendWecom(account, target, text, signal)
             : account.provider === 'dingtalk' ? this.sendDingtalk(account, target, text, signal)
               : Promise.resolve({ outcome: 'failed', message: '当前渠道尚未实现发送', retryable: false });
-      return await this.requestStorage.run(signal, () => Promise.race([delivery(), new Promise((resolve) => signal.addEventListener('abort', () => resolve({ outcome: 'unknown', message: '平台未确认发送结果' }), { once: true }))]));
+      const started = performance.now();
+      const result = await this.requestStorage.run(signal, () => Promise.race([delivery(), new Promise((resolve) => signal.addEventListener('abort', () => resolve({ outcome: 'unknown', message: '平台未确认发送结果' }), { once: true }))]));
+      this.diagnostic(account.provider, 'send', { outcome: result.outcome, durationMs: performance.now() - started });
+      return result;
     } catch (error) {
-      if ([401, 403].includes(error?.status)) {
+      this.diagnostic(account.provider, 'send', error);
+      if ([401, 403].includes(error?.status ?? error?.response?.status)) {
         this.stopAccount(account);
         account.status = 'auth_required';
         this.event('account', this.publicAccount(account));
         return { outcome: 'failed', message: '账号需要重新授权', retryable: false };
       }
-      if (error?.status === 429) return { outcome: 'failed', message: '平台限流，请稍后重试。', retryable: true };
+      if ((error?.status ?? error?.response?.status) === 429) return { outcome: 'failed', message: '平台限流，请稍后重试。', retryable: true };
       return { outcome: 'unknown', message: '平台未确认发送结果' };
     }
   }
@@ -880,7 +920,10 @@ export class Runtime {
       const response = await account.client.sendMessage(target.id, { msgtype: 'markdown', markdown: { content: text } });
       if (response?.errcode !== undefined && Number(response.errcode) !== 0) return { outcome: 'failed', message: `企业微信拒绝发送${numericCode(response.errcode) ? `（${numericCode(response.errcode)}）` : ''}`, retryable: false };
     } catch (error) {
-      if (Number.isFinite(Number(error?.errcode)) && Number(error.errcode) !== 0) return { outcome: 'failed', message: `企业微信拒绝发送${numericCode(error.errcode) ? `（${numericCode(error.errcode)}）` : ''}`, retryable: false };
+      if (Number.isFinite(Number(error?.errcode)) && Number(error.errcode) !== 0) {
+        this.diagnostic('wecom', 'send', { providerCode: error.errcode });
+        return { outcome: 'failed', message: `企业微信拒绝发送${numericCode(error.errcode) ? `（${numericCode(error.errcode)}）` : ''}`, retryable: false };
+      }
       throw error;
     }
     return { outcome: 'accepted', message: '平台已接受' };
@@ -927,10 +970,13 @@ export class Runtime {
       }
       break;
     }
+    if (!response.ok || ![undefined, 0, '0'].includes(result.errcode ?? result.code)) {
+      this.diagnostic('dingtalk', 'send', { status: response.status, providerCode: result.errcode ?? result.code, requestId: result.requestid });
+    }
     if (response.status === 429 || /^Throttling(?:\.|$)/.test(result.code ?? '')) return { outcome: 'failed', message: '钉钉限流，请稍后重试。', retryable: true };
     if (!group && result.invalidStaffIdList?.includes(target.id)) return { outcome: 'failed', message: '钉钉接收账号无效，请重新选择接收对象。', retryable: false };
     if (!group && result.flowControlledStaffIdList?.includes(target.id)) return { outcome: 'failed', message: '钉钉接收账号被限流，稍后重试。', retryable: true };
-    if (result.code === 'staffId.notExisted') return { outcome: 'failed', message: '钉钉接收对象已失效。请打开编辑，向机器人发送一条私信，再选择新识别的个人对象。', retryable: false };
+    if (result.code === 'staffId.notExisted') return { outcome: 'failed', message: '钉钉接收对象已失效（staffId.notExisted）。请检查成员所属企业及接收对象。', retryable: false };
     return response.ok && [undefined, 0, '0'].includes(result.errcode) && [undefined, 0, '0'].includes(result.code)
       ? { outcome: 'accepted', message: '平台已接受' }
       : { outcome: 'failed', message: `钉钉拒绝发送${numericCode(result.errcode ?? result.code) ? `（${numericCode(result.errcode ?? result.code)}）` : ''}`, retryable: false };
@@ -943,11 +989,10 @@ export class Runtime {
       params: { receive_id_type: target.kind === 'chat' || personalChatId ? 'chat_id' : 'open_id' },
       data: { receive_id: personalChatId ?? target.id, msg_type: 'text', content: JSON.stringify({ text }) },
     });
+    if (Number(response?.code) !== 0) this.diagnostic('feishu', 'send', { providerCode: response?.code, requestId: response?.error?.log_id });
     if (Number(response?.code) === 230101) return {
       outcome: 'failed', retryable: false,
-      message: personalChatId || target.kind === 'chat'
-        ? '飞书暂不允许发送该会话（230101）。请确认机器人可用范围，或选择已识别的群聊。'
-        : '飞书暂不允许主动发送个人消息（230101）。请打开机器人，发送一条私信后重试，应用会自动识别单聊会话。',
+      message: '飞书拒绝发送（230101）。请检查机器人可用范围、发布状态及接收对象。',
     };
     return response?.code === 0 && response?.data?.message_id
       ? { outcome: 'accepted', message: '平台已接受' }
@@ -963,10 +1008,7 @@ export class Runtime {
       signal,
     });
     const providerCode = [response.ret, response.errcode].find((value) => ![undefined, 0, '0'].includes(value));
-    if (String(providerCode) === '-2' && !contextToken) return {
-      outcome: 'failed', retryable: false,
-      message: '微信 iLink 拒绝发送（-2）。请向微信机器人发送一条私信，再点击测试。',
-    };
+    if (providerCode !== undefined) this.diagnostic('weixin', 'send', { providerCode });
     return providerCode === undefined
       ? { outcome: 'accepted', message: '平台已接受' }
       : { outcome: 'failed', message: `微信 iLink 拒绝发送${numericCode(providerCode) ? `（${numericCode(providerCode)}）` : ''}`, retryable: false };
@@ -984,6 +1026,8 @@ export class Runtime {
     await Promise.race([Promise.allSettled([...this.inFlight]), new Promise((resolve) => { drainTimer = setTimeout(resolve, 2_000); })]);
     clearTimeout(drainTimer);
     axios.interceptors.request.eject(this.axiosInterceptorId);
+    feishuRegistrationHttp.interceptors.request.eject(this.registrationInterceptorId);
+    Object.assign(feishuRegistrationHttp.defaults, this.originalRegistrationDefaults);
     if (globalThis.fetch === this.fetch) globalThis.fetch = this.originalGlobalFetch;
     axios.defaults.proxy = this.originalAxiosDefaults.proxy;
     axios.defaults.httpAgent = this.originalAxiosDefaults.httpAgent;

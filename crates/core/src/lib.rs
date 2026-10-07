@@ -10,3 +10,5 @@ pub mod ricoh_api;
 pub mod runtime;
 pub mod scheduler;
 pub mod storage;
+
+pub mod system_proxy;

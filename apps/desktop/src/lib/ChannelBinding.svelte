@@ -238,7 +238,7 @@
       {#if botUrl}<button class="binding-retry" on:click={openBot}>{providerId === "dingtalk" ? "查看钉钉机器人" : "打开机器人"}</button>{/if}
       {#if botError}<p role="alert">{botError}</p>{/if}
       {#if selectedTargets.length}<div class="connected-recipients" aria-label="已选接收对象">{#each selectedTargets as target, index (`${target.kind}:${target.id}`)}<RecipientChip {target} {index} />{/each}</div>{/if}
-      {#if !selectedTargets.length}<p role="status">{!ready ? busyConnection ? `账户已授权，正在连接${providerName}。` : `账户已授权，${providerName}连接未就绪。请检查网络后重试。` : binding?.message || (targets.length ? "请选择通知接收位置。" : providerId === "dingtalk" ? "打开机器人发条私信，返回这里继续" : "给机器人发条私信，返回这里继续")}</p>{/if}
+      {#if !selectedTargets.length}<p role="status">{!ready ? busyConnection ? `账户已授权，正在连接${providerName}。` : `账户已授权，${providerName}连接未就绪。请检查网络后重试。` : binding?.message || (targets.length ? "请选择通知接收位置。" : "平台尚未返回接收对象。可使用手动配置添加。")}</p>{/if}
     </div>
     <details class="recipient-settings" bind:open={recipientSettingsOpen}><summary>接收位置</summary>
       {#if canDetectGroups}<div class="group-tools"><span>{providerId === "feishu" ? "机器人所在群聊" : "已识别的群聊"}</span><button class="binding-retry" disabled={detecting} on:click={detectGroups}>{detecting ? "正在刷新…" : "刷新群聊"}</button></div>{/if}
