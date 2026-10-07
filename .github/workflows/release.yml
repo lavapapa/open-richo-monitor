@@ -43,7 +43,7 @@ jobs:
           npm run build:notifications --prefix apps/desktop
           cargo test --locked --manifest-path apps/desktop/src-tauri/Cargo.toml
           npm run package:macos:dmg --prefix apps/desktop
-          node scripts/test-notification-runtime.mjs apps/desktop/src-tauri/target/release/bundle/macos/open-richo-monitor.app/Contents/MacOS/notification-runtime
+          node scripts/test-notification-runtime.mjs apps/desktop/src-tauri/target/release/bundle/macos/open-richo-monitor.app/Contents/MacOS/notification-runtime apps/desktop/src-tauri/target/release/bundle/macos/open-richo-monitor.app/Contents/Resources/notification-runtime.mjs
       - name: Windows tests and package
         if: runner.os == 'Windows'
         shell: pwsh
@@ -76,5 +76,6 @@ jobs:
         run: |
           VERSION=$(node -p 'JSON.parse(require("fs").readFileSync("apps/desktop/src-tauri/tauri.conf.json")).version')
           gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v$VERSION" > /dev/null
+          find dist/release -mindepth 2 -type f -exec cp {} dist/release/ \;
           node scripts/create-update-manifest.mjs dist/release
-          gh release create "v$VERSION" dist/release/* --verify-tag --draft --title "open-richo-monitor $VERSION" --generate-notes
+          gh release create "v$VERSION" $(find dist/release -maxdepth 1 -type f) --verify-tag --draft --title "open-richo-monitor $VERSION" --generate-notes
