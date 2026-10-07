@@ -16,7 +16,9 @@
 
 商品持续上架且有货时，真实库存比上一条有效观察增加会生成 `stock_increased` 提醒，并交付系统通知、已开启且订阅 `stock_available` 的渠道，以及已开启的突出提醒。库存增量历史复用 `check_runs`，提醒复用事件序列与 outbox。相同库存、下降、缺失库存及迟到观察保持原有判定。
 
-商品的 `prominentAlert` 由 `MonitorApp::set_product_prominent_alert` 保存。导出和导入配置包含这个字段；移除商品及恢复默认会清除该商品的突出设置。通知文案由 [app.rs](../crates/core/src/app.rs) 的 `notification_text` 统一构造：库存增加显示前后库存值，突出商品使用 `【⚠️⚠️⚠️立即抢购⚠️⚠️⚠️】` 前缀，普通库存增加使用 `【⚠️库存增加⚠️】`，普通上架使用 `【⚠️上架⚠️】`；系统通知与渠道通知使用同一文案。
+商品的 `prominentAlert` 由 `MonitorApp::set_product_prominent_alert` 保存。导出和导入配置包含这个字段；移除商品及恢复默认会清除该商品的突出设置。通知文案由 [app.rs](../crates/core/src/app.rs) 的 `notification_text` 统一构造：首次上架和再次上架使用“上架”，保持上架时从无货到有货及正库存增加使用“补货”，已知前值时展示库存变化；突出商品保留“立即抢购”前缀。系统通知与渠道通知使用同一完整正文，通知、引导和历史中的用户可见名称保持一致。
+
+库存事件在提交事务中保存此前上架状态与可获得的库存；监控异常事件保存发生时的原因、连续失败次数和有效监控失败时长。事件和待投递记录各自持有这些信息，后续补货、恢复、历史清理与应用重开保持先前通知的事件内容。失败次数按同商品、同轮次的有效检查累计，成功检查清零；暂停、计划外和退出期间不增加次数或有效失败时长。持久化实现见 [storage.rs](../crates/core/src/storage.rs) 的 `EventNotificationDetails`、`commit_observation`、`commit_health_transition` 及 [runtime_storage.rs](../crates/core/src/storage/runtime_storage.rs) 的 `record_monitoring_runtime`。
 
 `MonitorApp::claim_prominent_alert` 返回可选 `ProminentAlert`，其字段及 camelCase 序列化以 [app.rs](../crates/core/src/app.rs) 的同名结构为准。远端主图地址和已匹配的本地缓存路径都可用于展示；价格保持源接口的十进制文本。
 

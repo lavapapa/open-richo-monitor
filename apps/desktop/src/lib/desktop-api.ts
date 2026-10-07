@@ -135,6 +135,8 @@ export interface NotificationChannel {
   id: string;
   name: string;
   botName?: string | null;
+  botUrl?: string | null;
+  appName?: string | null;
   providerId: string;
   providerName: string;
   enabled: boolean;
@@ -154,11 +156,14 @@ export interface ChannelTarget { id: string; kind: string; label: string }
 export interface ChannelBinding {
   id: string;
   provider: string;
-  status: "waiting" | "scanned" | "complete" | "expired" | "cancelled" | "failed";
+  status: "waiting" | "scanned" | "needs_verification" | "complete" | "expired" | "cancelled" | "failed";
+  connectionStatus?: string | null;
   qrUrl?: string | null;
   message?: string | null;
   targets: ChannelTarget[];
   botName?: string | null;
+  botUrl?: string | null;
+  appName?: string | null;
 }
 
 export interface ProviderField {
@@ -200,7 +205,8 @@ export interface ProductScan {
 
 export interface PlatformSnapshot {
   loginStartEnabled: boolean | null;
-  notificationPermission: "granted" | "denied" | "prompt" | "prompt_with_rationale";
+  notificationPermission: "granted" | "denied" | "prompt" | "prompt_with_rationale" | "unavailable";
+  notificationPermissionError: string | null;
   projectUrl: string | null;
   tutorialUrl: string | null;
   feedbackUrl: string | null;
@@ -305,7 +311,7 @@ const previewSnapshot: DesktopSnapshot = {
   ],
   proxies: [],
   scan: null,
-  platform: { loginStartEnabled: false, notificationPermission: "granted", projectUrl: null, tutorialUrl: null, feedbackUrl: null },
+  platform: { loginStartEnabled: false, notificationPermission: "granted", notificationPermissionError: null, projectUrl: null, tutorialUrl: null, feedbackUrl: null },
   recentEvents: [{ id: 1, at: "2026-10-04T09:18:00.284+08:00", kind: "stock_available", productId: "65", message: "商品 65 有货" }],
   recentChecks: [
     { productId: "65", name: "GR IIIx", availability: "in_stock", isShow: 1, stock: 3, at: "2026-10-04T09:18:00.284+08:00" },
@@ -364,7 +370,7 @@ function previewMessagePage(query: MessageQuery): MessagePage {
       const previous = checks.filter((before) => before.productId === item.productId && Date.parse(before.at) < Date.parse(item.at)).sort((a, b) => Date.parse(b.at) - Date.parse(a.at))[0];
       const changes: string[] = [];
       if (previous && previous.isShow !== item.isShow) changes.push(item.isShow === 1 ? "商品上架" : "商品下架");
-      if (previous && previous.stock !== item.stock) changes.push(previous.stock === null ? `库存已获取：${item.stock}` : item.stock === null ? "接口未提供库存" : `库存${item.stock > previous.stock ? "增加" : "减少"} ${previous.stock} → ${item.stock}`);
+      if (previous && previous.stock !== item.stock) changes.push(previous.stock === null ? `库存已获取：${item.stock}` : item.stock === null ? "接口未提供库存" : `${item.stock > previous.stock ? "补货" : "库存减少"} ${previous.stock} → ${item.stock}`);
       const detail = changes.length ? changes.join(" · ") : `检查结果：${item.isShow === 1 ? "已上架" : "未上架"}${item.stock === null ? "" : ` · 库存 ${item.stock}`}`;
       return { at: item.at, productId: item.productId, name: item.name, isShow: item.isShow, stock: item.stock, detail };
     }),
@@ -393,6 +399,7 @@ function previewCommand(name: string, payload: Record<string, any> = {}): unknow
       if (!binding) throw new DesktopApiError("绑定会话已结束，请重新扫码。");
       if (binding.status === "waiting" && Date.now() - binding.startedAt > 4000) {
         binding.status = "complete";
+        binding.connectionStatus = "ready";
         binding.targets = [{ id: "preview-user", kind: "user", label: "演示账号" }];
         binding.message = "网页演示已连接，未注册真实机器人。";
       }
@@ -452,7 +459,7 @@ function previewCommand(name: string, payload: Record<string, any> = {}): unknow
       const binding = form.bindingId ? previewBindings.get(form.bindingId) : null;
       const selectedTargets = form.targets ?? old?.selectedTargets ?? [];
       const credentialsChanged = !old || !!binding || Object.entries(form.values).some(([key, value]) => !key.startsWith("target") && String(value).trim());
-      const saved: NotificationChannel = { id: old?.id ?? `preview-${Date.now()}`, name: form.name, botName: binding?.botName ?? old?.botName, providerId: provider.id, providerName: provider.name, enabled: credentialsChanged ? false : old!.enabled, configuredFieldKeys: [...new Set([...(old?.configuredFieldKeys ?? []), ...Object.keys(form.values)])], subscriptions: form.subscriptions, lastTest: credentialsChanged ? null : old!.lastTest, lastDelivery: old?.lastDelivery ?? null, connectionStatus: "ready", targets: binding?.targets ?? old?.targets ?? [], selectedTargets: structuredClone(selectedTargets), targetId: selectedTargets[0]?.id ?? form.values.targetId ?? old?.targetId, targetKind: selectedTargets[0]?.kind ?? form.values.targetKind ?? old?.targetKind };
+      const saved: NotificationChannel = { id: old?.id ?? `preview-${Date.now()}`, name: form.name, botName: binding?.botName ?? old?.botName, botUrl: binding?.botUrl ?? old?.botUrl, appName: binding?.appName ?? old?.appName, providerId: provider.id, providerName: provider.name, enabled: credentialsChanged ? false : old!.enabled, configuredFieldKeys: [...new Set([...(old?.configuredFieldKeys ?? []), ...Object.keys(form.values)])], subscriptions: form.subscriptions, lastTest: credentialsChanged ? null : old!.lastTest, lastDelivery: old?.lastDelivery ?? null, connectionStatus: "ready", targets: binding?.targets ?? old?.targets ?? [], selectedTargets: structuredClone(selectedTargets), targetId: selectedTargets[0]?.id ?? form.values.targetId ?? old?.targetId, targetKind: selectedTargets[0]?.kind ?? form.values.targetKind ?? old?.targetKind };
       previewSnapshot.channels = [...previewSnapshot.channels.filter((item) => item.id !== saved.id), saved];
       return structuredClone(saved);
     }
@@ -544,6 +551,8 @@ export const desktopApi = {
     command<ChannelBinding>("channel_binding_status", { bindingId }),
   cancelChannelBinding: (bindingId: string) =>
     command<OperationResult>("cancel_channel_binding", { bindingId }),
+  submitChannelBindingVerification: (bindingId: string, code: string) =>
+    command<ChannelBinding>("submit_channel_binding_verification", { bindingId, code }),
   beginChannelRebinding: (channelId: string) =>
     command<ChannelBinding>("begin_channel_rebinding", { channelId }),
   detectChannelGroups: (channelId: string) =>

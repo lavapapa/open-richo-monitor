@@ -2,7 +2,7 @@
 
 桌面端通过 Tauri 官方 updater 分别读取 Gitee 和 GitHub Release 的 `latest.json`。启动时检查，运行期间由原生任务每小时检查；睡眠后跳过积压的检查。两个来源并行检查，选择语义版本较新的发布；同版优先从 Gitee 下载，失败时尝试 GitHub。来源地址由 `tauri.conf.json` 的 `plugins.updater.endpoints` 定义。发现新版本后显示提示，用户点击“下载并重启”才开始下载和安装。
 
-检查与下载使用官方插件内置的系统静态 HTTP/HTTPS 代理支持，独立于商城请求的代理池开关。PAC 与自动发现代理暂未支持，检查失败时可从项目发布页手动下载安装包。
+检查与下载使用官方插件内置的系统静态 HTTP/HTTPS 代理支持，独立于商城请求的系统代理与代理池开关。PAC 与自动发现代理暂未支持，检查失败时可从项目发布页手动下载安装包。
 
 ## 一、生命周期
 
@@ -24,7 +24,7 @@
 
 Gitee 的公开镜像为 `marvinfore/open-richo-monitor`。同步 GitHub 的主分支与版本标签，在同名发行版上传完整安装包、更新构件和签名。将相同构件放入独立的镜像清单目录，运行 `node scripts/create-update-manifest.mjs 目录 "" https://gitee.com/marvinfore/open-richo-monitor/releases/download/v版本`，生成指向 Gitee 附件的 `latest.json`；全部附件齐全后一起创建发行版。公开后用未登录请求检查 `releases/download/latest/latest.json` 及其中的构件地址。源码同步与发行版附件分别处理；浏览器登录或发布凭据留在发布者一侧，App 无需 Gitee 账号或访问令牌。
 
-Gitee 发行页面列明普通仓库单附件 100M、总附件 1G 的容量限制。每次发布核对实际额度与构件大小，按需清理过时镜像附件；GitHub 保留历史发行版。镜像滞后、清单损坏或单一来源不可用时，另一个来源独立参与检查；两个来源都失败时显示检查错误并保留已有更新对象供重试。
+Gitee 发行页面列明普通仓库单附件 100M、总附件 1G 的容量限制。每次发布核对实际额度与构件大小，按需清理过时镜像附件；GitHub 保留历史发行版。镜像滞后、清单损坏或单一来源不可用时，另一个来源独立参与检查。任一来源完成有效检查，即可完成本次检查；未发现新版时显示“暂未发现更新。”，其他来源的失败记入日志。两个来源都失败时显示来源名称与错误原因，并保留已有更新对象供重试。
 
 更新私钥保存在发布者的受限本地目录与 GitHub Actions 的 `TAURI_SIGNING_PRIVATE_KEY` secret，密码使用 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`；源码中的 updater `pubkey` 用来验证更新。妥善备份私钥，沿用同一密钥签后续版本。更新签名独立于 macOS Developer ID 和 Windows Authenticode；操作系统首次安装限制仍按平台规则处理。
 

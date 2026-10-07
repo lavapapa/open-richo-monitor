@@ -69,6 +69,7 @@ struct NotificationJob {
     channel_id: Option<String>,
     generation: Option<u64>,
     target: Option<NotificationTarget>,
+    waited_for_connection: bool,
 }
 
 struct RoutedSchedulerClient {
@@ -260,6 +261,8 @@ pub struct ChannelView {
     pub id: String,
     pub name: String,
     pub bot_name: Option<String>,
+    pub bot_url: Option<String>,
+    pub app_name: Option<String>,
     pub provider_id: String,
     pub provider_name: String,
     pub enabled: bool,
@@ -840,27 +843,19 @@ impl MonitorApp {
         let Some(job) = job else { return Ok(None) };
         let alert_text = self.notification_text(&job.event).await?;
         Ok(Some({
-            let (kind, label) = match job.event.kind {
+            let kind = match job.event.kind {
                 crate::storage::MonitorEventKind::FirstObservedInStock
-                | crate::storage::MonitorEventKind::OutOfStockToInStock => {
-                    ("stock_available", "上架或补货")
-                }
-                crate::storage::MonitorEventKind::MonitoringFailed => {
-                    ("monitoring_failed", "监控异常")
-                }
-                crate::storage::MonitorEventKind::StockIncreased => ("stock_increased", "库存增加"),
-                crate::storage::MonitorEventKind::Recovered => ("recovered", "监控恢复"),
+                | crate::storage::MonitorEventKind::OutOfStockToInStock => "stock_available",
+                crate::storage::MonitorEventKind::MonitoringFailed => "monitoring_failed",
+                crate::storage::MonitorEventKind::StockIncreased => "stock_increased",
+                crate::storage::MonitorEventKind::Recovered => "recovered",
             };
             let event = RecentEvent {
                 id: job.event.id,
                 at: format_timestamp(job.event.observed_at_ms),
                 kind: kind.into(),
                 product_id: job.event.product.product_id.clone(),
-                message: if kind == "stock_available" || kind == "stock_increased" {
-                    alert_text
-                } else {
-                    format!("商品 {} {}", job.event.product.product_id, label)
-                },
+                message: alert_text,
             };
             (job.id, event)
         }))
@@ -1445,7 +1440,7 @@ impl MonitorApp {
                                 ("monitoring_failed", "监控异常")
                             }
                             crate::storage::MonitorEventKind::StockIncreased => {
-                                ("stock_increased", "库存增加")
+                                ("stock_increased", "补货")
                             }
                             crate::storage::MonitorEventKind::Recovered => {
                                 ("recovered", "监控恢复")
@@ -1558,6 +1553,12 @@ impl MonitorApp {
                             id: channel.id.clone(),
                             name: channel.name.clone(),
                             bot_name: channel_credentials(&values)["botName"]
+                                .as_str()
+                                .map(str::to_owned),
+                            bot_url: channel_credentials(&values)["botUrl"]
+                                .as_str()
+                                .map(str::to_owned),
+                            app_name: channel_credentials(&values)["appName"]
                                 .as_str()
                                 .map(str::to_owned),
                             provider_id: channel.provider.clone(),
@@ -2157,21 +2158,33 @@ impl MonitorApp {
         {
             return Err(AppError::InvalidInput("此平台请使用应用凭据连接".into()));
         }
-        self.configure_notification_runtime(Some("")).await?;
         let id = format!(
             "binding-{}-{}",
             now_ms(),
             BINDING_SEQUENCE.fetch_add(1, Ordering::Relaxed)
         );
-        let value = self
-            .notification_runtime
-            .request(
-                "begin_binding",
-                serde_json::json!({"provider":provider,"bindingId":id,"appId":app_id}),
-            )
-            .await
-            .map_err(AppError::Network)?;
-        self.persist_binding(value).await
+        // SDK 返回之前，首次绑定也持有通知进程，避免后台将它视为空闲。
+        self.notification_runtime
+            .remember_binding(serde_json::json!({
+                "id":id, "provider":provider, "status":"waiting", "targets":[]
+            }));
+        let result = async {
+            self.configure_notification_runtime(Some("")).await?;
+            let value = self
+                .notification_runtime
+                .request(
+                    "begin_binding",
+                    serde_json::json!({"provider":provider,"bindingId":id,"appId":app_id}),
+                )
+                .await
+                .map_err(AppError::Network)?;
+            self.persist_binding(value).await
+        }
+        .await;
+        if result.is_err() {
+            self.notification_runtime.forget_binding(&id);
+        }
+        result
     }
 
     pub async fn detect_channel_groups(
@@ -2279,6 +2292,23 @@ impl MonitorApp {
         self.persist_binding(value).await
     }
 
+    pub async fn submit_channel_binding_verification(
+        &self,
+        id: &str,
+        code: &str,
+    ) -> Result<crate::notifications::ChannelBinding, AppError> {
+        let _binding_operation = self.notification_binding_operations.lock().await;
+        let value = self
+            .notification_runtime
+            .request(
+                "submit_binding_verification",
+                serde_json::json!({"bindingId":id,"code":code}),
+            )
+            .await
+            .map_err(AppError::Network)?;
+        self.persist_binding(value).await
+    }
+
     async fn persist_binding(
         &self,
         mut value: serde_json::Value,
@@ -2303,14 +2333,15 @@ impl MonitorApp {
                     .await?;
             }
         }
-        public.message = public.message.map(|_| {
-            match public.status.as_str() {
-                "failed" => "账户连接失败，请检查平台授权后重试",
-                "expired" => "二维码已过期，请重新开始连接",
-                "complete" => "账户已授权，请选择接收会话",
+        public.message = public.message.and_then(|message| {
+            let message = match (public.status.as_str(), message.as_str()) {
+                ("complete", "dingtalk_missing_staff_id") => "已收到私信，钉钉未提供可用于通知的员工 ID。请使用机器人所属组织的账号发送私信，或在群内 @机器人后选择群聊。",
+                ("failed", _) => "账户连接失败，请检查平台授权后重试",
+                ("expired", _) => "二维码已过期，请重新开始连接",
+                ("complete", _) => return None,
                 _ => "等待平台授权",
-            }
-            .into()
+            };
+            Some(message.into())
         });
         self.notification_runtime.remember_binding(value);
         Ok(public)
@@ -2337,6 +2368,7 @@ impl MonitorApp {
         } else {
             None
         };
+        let configuration_operation = self.notification_configuration.lock().await;
         let id = input.id.unwrap_or_else(|| format!("channel-{}", now_ms()));
         let provider = input.provider_id.clone();
         let definition = provider_definitions()
@@ -2439,6 +2471,9 @@ impl MonitorApp {
         let credentials_changed = old_values.is_none()
             || input.binding_id.is_some()
             || previous_credentials != channel_credentials(&values);
+        if credentials_changed && old_values.is_some() {
+            self.notification_runtime.quiesce_account(&id).await.map_err(AppError::Network)?;
+        }
         let notification_runtime = self.notification_runtime.clone();
         self.call(move |db| {
             if !credentials_changed {
@@ -2489,6 +2524,7 @@ impl MonitorApp {
             self.call(move |db| db.delete_credential("channel", &binding_id))
                 .await?;
         }
+        drop(configuration_operation);
         let _ = self.configure_notification_runtime(None).await;
         self.snapshot()
             .await?
@@ -2567,7 +2603,7 @@ impl MonitorApp {
                     .await;
                 recipients.push(RecipientTest {
                     target,
-                    outcome: result.outcome,
+                    outcome: if result.outcome == "deferred" { "failed".into() } else { result.outcome },
                     message: result.message,
                 });
             }
@@ -3536,8 +3572,9 @@ impl MonitorApp {
             }
             // 每个接收路由同时只领取一条；不同路由并行，限制在途网络请求数量。
             if deliveries.len() < 32 {
+                let ready = self.notification_runtime.ready_account_ids();
                 if let Some(job) = self
-                    .call(|db| db.claim_channel_notification(now_ms()))
+                    .call(move |db| db.claim_ready_channel_notification(now_ms(), &ready))
                     .await?
                 {
                     let app = self.clone();
@@ -3562,6 +3599,7 @@ impl MonitorApp {
             generation,
             event,
             target,
+            waited_for_connection,
         } = job;
         let subscription = match event.kind {
             crate::storage::MonitorEventKind::FirstObservedInStock
@@ -3577,6 +3615,7 @@ impl MonitorApp {
                 channel_id: Some(channel_id),
                 generation: Some(generation),
                 target,
+                waited_for_connection,
             })
             .await;
         let (outcome, message) = match result {
@@ -3886,7 +3925,6 @@ impl MonitorApp {
                 let scheduler = Scheduler::new_with_gate(
                     config.clone(),
                     client,
-                    Arc::new(TokioClock::default()),
                     Arc::new(OsJitter::new().map_err(|e| AppError::Unsupported(e.to_string()))?),
                     self.request_gate.clone(),
                 )
@@ -4166,21 +4204,43 @@ impl MonitorApp {
             .as_ref()
             .map(|p| p.name.as_str())
             .unwrap_or(&event.product.product_id);
-        if event.kind == crate::storage::MonitorEventKind::StockIncreased {
-            let key = event.product.key.clone();
-            let observed_at_ms = event.observed_at_ms;
-            let stock = event.stock;
-            let previous_stock = self
-                .call(move |db| db.stock_before_check_run(&key, observed_at_ms, stock))
-                .await?;
+        if matches!(
+            event.kind,
+            crate::storage::MonitorEventKind::FirstObservedInStock
+                | crate::storage::MonitorEventKind::OutOfStockToInStock
+                | crate::storage::MonitorEventKind::StockIncreased
+        ) {
+            let restock = event.kind == crate::storage::MonitorEventKind::StockIncreased
+                || event.kind == crate::storage::MonitorEventKind::OutOfStockToInStock
+                    && event.notification_details.previous_is_show == Some(1)
+                    && event.stock > 0.0;
             let label = if product.as_ref().is_some_and(|p| p.prominent_alert) {
                 "【⚠️⚠️⚠️立即抢购⚠️⚠️⚠️】"
+            } else if restock {
+                "【⚠️补货⚠️】"
             } else {
-                "【⚠️库存增加⚠️】"
+                "【⚠️上架⚠️】"
             };
-            let change = previous_stock.map_or_else(
-                || format!("库存增加至：{}", event.stock),
-                |previous| format!("库存增加：{} → {}", previous, event.stock),
+            let change = event.notification_details.previous_stock.map_or_else(
+                || {
+                    format!(
+                        "{}：{}",
+                        if restock {
+                            "补货后库存"
+                        } else {
+                            "记录库存"
+                        },
+                        event.stock
+                    )
+                },
+                |previous| {
+                    format!(
+                        "{}：{} → {}",
+                        if restock { "补货" } else { "库存变化" },
+                        previous,
+                        event.stock
+                    )
+                },
             );
             return Ok(format!(
                 "{label}{name}\n商品 ID：{}\n{change}\n发生时间：{}（北京时间）",
@@ -4189,18 +4249,20 @@ impl MonitorApp {
             ));
         }
         let label = match event.kind {
-            crate::storage::MonitorEventKind::FirstObservedInStock
-            | crate::storage::MonitorEventKind::OutOfStockToInStock => {
-                if product.as_ref().is_some_and(|p| p.prominent_alert) {
-                    "【⚠️⚠️⚠️立即抢购⚠️⚠️⚠️】"
-                } else {
-                    "【⚠️上架⚠️】"
-                }
-            }
             crate::storage::MonitorEventKind::MonitoringFailed => "监控持续失败，请检查连接：",
-            crate::storage::MonitorEventKind::StockIncreased => unreachable!(),
             crate::storage::MonitorEventKind::Recovered => "监控已恢复：",
+            _ => unreachable!(),
         };
+        if let Some(failure) = &event.notification_details.failure {
+            return Ok(format!(
+                "{label}{name}\n商品 ID：{}\n失败原因：{}\n连续失败：{} 次\n持续时间：{} 分钟 {} 秒（有效监控时间）\n记录库存：{}\n发生时间：{}（北京时间）",
+                event.product.product_id,
+                failure.reason.as_deref().unwrap_or("未提供具体原因"),
+                failure.count, failure.active_duration_ms / 60_000,
+                failure.active_duration_ms / 1000 % 60, event.stock,
+                format_timestamp(event.observed_at_ms)
+            ));
+        }
         Ok(format!(
             "{label}{name}\n商品 ID：{}\n记录库存：{}\n发生时间：{}（北京时间）",
             event.product.product_id,
@@ -4214,6 +4276,7 @@ impl MonitorApp {
         let subscription = job.subscription.to_owned();
         let generation = job.generation;
         let selected_recipient = job.target;
+        let waited_for_connection = job.waited_for_connection;
         let filter_subscription = subscription.clone();
         let channels = self
             .call(move |db| {
@@ -4285,7 +4348,7 @@ impl MonitorApp {
                                     generation,
                                 )
                                 .map_err(|error| error.to_string())?;
-                            if !valid {
+                            if !valid || (waited_for_connection && !db.waiting_notification_is_current(&event, now_ms()).map_err(|error| error.to_string())?) {
                                 return Ok(false);
                             }
                             match &selected_recipient {
@@ -4311,9 +4374,15 @@ impl MonitorApp {
                     tokio::time::sleep(std::time::Duration::from_secs(2u64.pow(attempt))).await;
                 }
             } else if let Err(error) = &configured {
-                result = SendResult::failed(error.to_string());
+                result = if self.notification_runtime.is_recovering().await {
+                    SendResult::deferred(error.to_string())
+                } else { SendResult::failed(error.to_string()) };
             }
             if !applicable {
+                continue;
+            }
+            if result.outcome == "deferred" {
+                last_result = Some((result.outcome, result.message));
                 continue;
             }
             let id = channel.id;
@@ -4446,6 +4515,13 @@ fn channel_credentials(values: &BTreeMap<String, String>) -> serde_json::Value {
     .unwrap();
     if let Some(packed) = values.get("_sdkCredentials") {
         let mut credentials = serde_json::from_str(packed).unwrap_or(serde_json::Value::Null);
+        if let Some(token) = manual.get("botToken") {
+            if credentials.get("botToken").or_else(|| credentials.get("token")).is_some_and(|old| old != token) {
+                for field in ["token", "contextTokens", "contextMetadata", "getUpdatesBuf"] {
+                    credentials.as_object_mut().unwrap().remove(field);
+                }
+            }
+        }
         crate::notifications::merge_credentials(&mut credentials, &manual);
         return credentials;
     }
@@ -4634,6 +4710,21 @@ mod tests {
         pin::Pin,
         sync::atomic::{AtomicUsize, Ordering},
     };
+
+    #[test]
+    fn changing_weixin_credentials_clears_previous_conversation_state() {
+        let mut values = BTreeMap::from([
+            ("_sdkCredentials".into(), serde_json::json!({"botToken":"old","token":"old","contextTokens":{"owner":"old-context"},"contextMetadata":{"owner":{"seq":"20"}},"getUpdatesBuf":"old-cursor"}).to_string()),
+            ("botToken".into(), "old".into()),
+        ]);
+        assert_eq!(channel_credentials(&values)["contextTokens"]["owner"], "old-context");
+        values.insert("botToken".into(), "new".into());
+        let credentials = channel_credentials(&values);
+        for field in ["token", "contextTokens", "contextMetadata", "getUpdatesBuf"] {
+            assert!(credentials.get(field).is_none(), "旧会话字段 {field} 未清理");
+        }
+        assert_eq!(credentials["botToken"], "new");
+    }
 
     #[tokio::test]
     async fn revoked_platform_permission_keeps_system_notification_queued() {
@@ -5298,17 +5389,205 @@ mod tests {
         let (_, system) = app.claim_system_notification().await.unwrap().unwrap();
         assert_eq!(system.id, event.id);
         assert!(system.message.contains("官翻品 GR IIIx"));
-        assert!(system.message.contains("库存增加：3 → 5"));
+        assert!(system.message.contains("补货：3 → 5"));
         assert!(system.message.starts_with("【⚠️⚠️⚠️立即抢购⚠️⚠️⚠️】"));
         let text = app.notification_text(&event).await.unwrap();
         assert!(text.starts_with("【⚠️⚠️⚠️立即抢购⚠️⚠️⚠️】官翻品 GR IIIx"));
-        assert!(text.contains("库存增加：3 → 5"));
+        assert!(text.contains("补货：3 → 5"));
         app.set_product_prominent_alert(65, false).await.unwrap();
         assert!(app
             .notification_text(&event)
             .await
             .unwrap()
-            .starts_with("【⚠️库存增加⚠️】官翻品 GR IIIx"));
+            .starts_with("【⚠️补货⚠️】官翻品 GR IIIx"));
+        drop(app);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn notification_copy_preserves_each_listing_and_restock_after_reopen() {
+        let directory = std::env::temp_dir().join(format!(
+            "ricoh-restock-copy-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let app = MonitorApp::open(&directory).unwrap();
+        app.set_onboarding_products(&[65]).await.unwrap();
+        app.set_system_notifications_enabled(true).await.unwrap();
+        let at = now_ms();
+        app.call(move |db| {
+            // 连续放货、抢空、再次补货，以及下架后重新上架。
+            for (sequence, is_show, stock) in [
+                (1, 1, Some(10.0)),
+                (2, 1, Some(0.0)),
+                (3, 1, Some(10.0)),
+                (4, 1, Some(20.0)),
+                (5, 0, None),
+                (6, 1, Some(0.0)),
+                (7, 1, Some(5.0)),
+                (8, 0, Some(2.0)),
+                (9, 1, Some(2.0)),
+                (10, 1, Some(4.0)),
+                (11, 1, Some(4.0)),
+                (12, 1, Some(1.0)),
+            ] {
+                let mut reducer = ObservationReducer::new(db.observation("65")?.map(|o| o.state));
+                let generation = db.product_generation("65")?;
+                let PrepareOutcome::Prepared(prepared) = reducer.prepare(
+                    AvailabilityResponse {
+                        sequence,
+                        generation,
+                        result: Ok(ObservationResult {
+                            availability: if stock.is_some_and(|s| s > 0.0) {
+                                Availability::InStock
+                            } else {
+                                Availability::OutOfStock
+                            },
+                            is_show,
+                            stock,
+                            observed_at_ms: at + sequence as i64,
+                        }),
+                    },
+                    RuntimeGate {
+                        generation,
+                        enabled: true,
+                        paused: false,
+                    },
+                ) else {
+                    panic!("expected observation")
+                };
+                db.commit_observation(
+                    ProductIdentity {
+                        key: "65".into(),
+                        product_id: "65".into(),
+                        sku_id: None,
+                    },
+                    prepared,
+                    &[],
+                )?;
+            }
+            // 文案应使用入队时的库存，而不依赖仍在保留期内的检查历史。
+            db.cleanup(at + 31 * 24 * 60 * 60 * 1000, 100)?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+        drop(app);
+        let app = MonitorApp::open(&directory).unwrap();
+        let expected = [
+            ("【⚠️上架⚠️】", "记录库存：10"),
+            ("【⚠️补货⚠️】", "补货：0 → 10"),
+            ("【⚠️补货⚠️】", "补货：10 → 20"),
+            ("【⚠️上架⚠️】", "记录库存：0"),
+            ("【⚠️补货⚠️】", "补货：0 → 5"),
+            ("【⚠️上架⚠️】", "库存变化：2 → 2"),
+            ("【⚠️补货⚠️】", "补货：2 → 4"),
+        ];
+        for (prefix, change) in expected {
+            let (id, event) = app.claim_system_notification().await.unwrap().unwrap();
+            assert!(event.message.starts_with(prefix), "{}", event.message);
+            assert!(event.message.contains(change), "{}", event.message);
+            app.finish_system_notification(id, Ok(())).await.unwrap();
+        }
+        assert!(app.claim_system_notification().await.unwrap().is_none());
+        drop(app);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn failure_notification_preserves_reason_count_and_active_duration() {
+        let directory = std::env::temp_dir().join(format!(
+            "ricoh-failure-copy-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let app = MonitorApp::open(&directory).unwrap();
+        app.set_onboarding_products(&[65]).await.unwrap();
+        app.set_system_notifications_enabled(true).await.unwrap();
+        let at = now_ms();
+        app.call(move |db| {
+            let generation = db.product_generation("65")?;
+            for sequence in 1..=3 {
+                db.record_monitoring_runtime(
+                    "65",
+                    generation,
+                    sequence,
+                    crate::scheduler::MonitoringHealth {
+                        failed_since_ms: Some(at),
+                        active_failure_ms: (sequence - 1) * 300_000,
+                        failure_reported: sequence == 3,
+                    },
+                    Some("连接超时"),
+                )?;
+            }
+            db.commit_health_transition(
+                ProductIdentity {
+                    key: "65".into(),
+                    product_id: "65".into(),
+                    sku_id: None,
+                },
+                3,
+                crate::scheduler::MonitoringHealthTransition::Failed { since_ms: at },
+                at + 600_000,
+                &[],
+            )?;
+            // 发送前已恢复；先前异常事件仍需保留真实故障信息。
+            db.record_monitoring_runtime(
+                "65",
+                generation,
+                4,
+                crate::scheduler::MonitoringHealth::default(),
+                None,
+            )?;
+            db.commit_health_transition(
+                ProductIdentity {
+                    key: "65".into(),
+                    product_id: "65".into(),
+                    sku_id: None,
+                },
+                4,
+                crate::scheduler::MonitoringHealthTransition::Recovered,
+                at + 600_001,
+                &[],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+        drop(app);
+        let app = MonitorApp::open(&directory).unwrap();
+        let (id, event) = app.claim_system_notification().await.unwrap().unwrap();
+        assert!(
+            event.message.contains("官翻品 GR IIIx"),
+            "{}",
+            event.message
+        );
+        assert!(
+            event.message.contains("失败原因：连接超时"),
+            "{}",
+            event.message
+        );
+        assert!(
+            event.message.contains("连续失败：3 次"),
+            "{}",
+            event.message
+        );
+        assert!(
+            event
+                .message
+                .contains("持续时间：10 分钟 0 秒（有效监控时间）"),
+            "{}",
+            event.message
+        );
+        let stored = app.call(|db| db.recent_events(10)).await.unwrap();
+        let failure = stored
+            .iter()
+            .find(|e| e.kind == crate::storage::MonitorEventKind::MonitoringFailed)
+            .unwrap();
+        assert_eq!(event.message, app.notification_text(failure).await.unwrap());
+        app.finish_system_notification(id, Ok(())).await.unwrap();
+        let (_, recovery) = app.claim_system_notification().await.unwrap().unwrap();
+        assert!(recovery.message.starts_with("监控已恢复：官翻品 GR IIIx"));
         drop(app);
         std::fs::remove_dir_all(directory).unwrap();
     }
@@ -6852,6 +7131,7 @@ mod tests {
                 channel_id: None,
                 generation: None,
                 target: None,
+                waited_for_connection: false,
             })
             .await
             .unwrap()
@@ -7433,6 +7713,118 @@ mod tests {
             app.cancel_channel_binding(&binding.id).await.unwrap();
         }
         app.shutdown_notification_runtime().await;
+        drop(app);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn first_binding_survives_idle_configuration_before_sdk_reply() {
+        let directory = std::env::temp_dir().join(format!(
+            "ricoh-first-binding-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let app = MonitorApp::open(&directory).unwrap();
+        app.set_notification_runtime_path(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/slow_binding_runtime.mjs"),
+        );
+        let binding = tokio::spawn({
+            let app = app.clone();
+            async move { app.begin_channel_binding("feishu").await }
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !app.notification_runtime.is_running().await {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        app.configure_notification_runtime(None).await.unwrap();
+        let result = binding.await.unwrap();
+        assert!(result.is_ok(), "首次绑定被后台空闲配置关闭：{result:?}");
+        assert_eq!(result.unwrap().status, "waiting");
+        app.shutdown_notification_runtime().await;
+        drop(app);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn ready_weixin_account_can_test_without_inbound_message() {
+        let directory = std::env::temp_dir().join(format!(
+            "ricoh-await-message-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let app = MonitorApp::open(&directory).unwrap();
+        app.set_notification_runtime_path(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/notification_runtime.mjs"),
+        );
+        app.notification_runtime
+            .configure(
+                serde_json::json!({"accounts":[{
+                    "id":"wx-first", "provider":"weixin", "enabled":true,
+                    "credentials":{"connectionStatus":"ready"}, "targets":[]
+                }]}),
+                true,
+            )
+            .await
+            .unwrap();
+        let generation = app.notification_runtime.account_generation("wx-first");
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(750),
+            app.wait_notification_account_ready("wx-first", generation),
+        )
+        .await;
+        app.shutdown_notification_runtime().await;
+        drop(app);
+        std::fs::remove_dir_all(directory).unwrap();
+        result.expect("微信在线后可直接测试").unwrap();
+    }
+
+    #[tokio::test]
+    async fn binding_connection_and_missing_staff_id_are_public_without_platform_details() {
+        let directory = std::env::temp_dir().join(format!(
+            "ricoh-binding-state-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let app = MonitorApp::open(&directory).unwrap();
+        let binding = app
+            .persist_binding(serde_json::json!({
+                "id":"dt-status", "provider":"dingtalk", "status":"complete",
+                "connectionStatus":"ready", "targets":[], "message":"dingtalk_missing_staff_id",
+                "botUrl":"https://open-dev.dingtalk.com/fe/app#/corp/robot", "appName":"授权创建的应用名称"
+            }))
+            .await
+            .unwrap();
+        assert_eq!(binding.connection_status.as_deref(), Some("ready"));
+        assert_eq!(
+            binding.bot_url.as_deref(),
+            Some("https://open-dev.dingtalk.com/fe/app#/corp/robot")
+        );
+        assert_eq!(binding.app_name.as_deref(), Some("授权创建的应用名称"));
+        assert!(binding.targets.is_empty());
+        assert!(binding.message.as_deref().unwrap().contains("已收到私信"));
+        let binding = app
+            .persist_binding(serde_json::json!({
+                "id":"dt-status", "provider":"dingtalk", "status":"complete",
+                "connectionStatus":"failed", "targets":[], "message":"private-platform-error"
+            }))
+            .await
+            .unwrap();
+        assert_eq!(binding.connection_status.as_deref(), Some("failed"));
+        assert!(!serde_json::to_string(&binding)
+            .unwrap()
+            .contains("private-platform-error"));
+        let binding = app
+            .persist_binding(serde_json::json!({
+                "id":"dt-status", "provider":"dingtalk", "status":"complete",
+                "connectionStatus":"ready", "targets":[], "message":"authorized"
+            }))
+            .await
+            .unwrap();
+        assert!(binding.message.is_none(), "授权完成的通用文案不能遮住前端的具体初始化步骤");
         drop(app);
         std::fs::remove_dir_all(directory).unwrap();
     }
@@ -8061,6 +8453,7 @@ mod tests {
                 channel_id: Some(claimed.channel_id),
                 generation: Some(claimed.generation),
                 target: claimed.target,
+                waited_for_connection: claimed.waited_for_connection,
             })
             .await
             .unwrap();
@@ -8125,6 +8518,15 @@ mod tests {
             .as_deref()
             .unwrap();
         assert!(saved_message.contains("研发群") && saved_message.contains("机器人没有发送权限"));
+        app.call(|db| {
+            let saved = db.credential("channel", "failed-account")?.unwrap();
+            let mut values: BTreeMap<String, String> = serde_json::from_str(&saved).map_err(StorageError::ConfigJson)?;
+            values.insert("_sdkCredentials".into(), serde_json::json!({"botId":"bot","secret":"private-secret","recipientOutcomes":{"chat-a":"deferred"}}).to_string());
+            db.save_credential("channel", "failed-account", &serde_json::to_string(&values).map_err(StorageError::ConfigJson)?)
+        }).await.unwrap();
+        let offline_test = app.test_channel("failed-account").await.unwrap();
+        assert_eq!(offline_test.outcome, "failed");
+        assert_eq!(offline_test.recipients[0].outcome, "failed");
         app.shutdown_notification_runtime().await;
         drop(app);
         std::fs::remove_dir_all(directory).unwrap();
@@ -8172,6 +8574,33 @@ mod tests {
         assert!(!public.contains("private-bot-token"));
         assert!(!public.contains("fresh-private-context"));
         drop(reopened);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn replacing_weixin_token_discards_queued_old_session_snapshots() {
+        let directory = std::env::temp_dir().join(format!("ricoh-token-change-{}-{}", std::process::id(), now_ms()));
+        let app = MonitorApp::open(&directory).unwrap();
+        app.set_notification_runtime_path(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/notification_runtime.mjs"));
+        let input = |token: &str| ChannelInput {
+            id: Some("wx-change".into()), name: "微信".into(), provider_id: "weixin".into(), binding_id: None,
+            targets: Some(vec![NotificationTarget { id: "owner".into(), kind: "user".into(), label: "Fixture".into() }]),
+            values: BTreeMap::from([("botToken".into(), token.into())]), subscriptions: vec![],
+        };
+        app.save_channel(input("old-token")).await.unwrap();
+        app.configure_notification_runtime(Some("wx-change")).await.unwrap();
+        app.notification_runtime.request("fixture_context_update", serde_json::json!({"accountId":"wx-change"})).await.unwrap();
+        app.save_channel(input("new-token")).await.unwrap();
+        let credentials = app.call(|db| {
+            let saved = db.credential("channel", "wx-change")?.unwrap();
+            let values = serde_json::from_str(&saved).map_err(StorageError::ConfigJson)?;
+            Ok(channel_credentials(&values))
+        }).await.unwrap();
+        assert_eq!(credentials["botToken"], "new-token");
+        assert!(credentials["contextTokens"].is_null());
+        assert!(credentials["contextMetadata"].is_null());
+        app.shutdown_notification_runtime().await;
+        drop(app);
         std::fs::remove_dir_all(directory).unwrap();
     }
 

@@ -27,11 +27,14 @@
 
   let qrImage = "";
   let pending = false;
+  let verificationCode = "";
+  let submittingCode = false;
   let detecting = false;
   let detectedTargets: ChannelTarget[] = [];
   let groupsDetected = false;
   let defaultRecipientSelected = false;
   let error = "";
+  let botError = "";
   let groupsError = "";
   let editingChannelId: string | null = null;
   let recipientSettingsOpen = !!existing;
@@ -44,9 +47,18 @@
   $: needsAuthentication = existing?.connectionStatus === "auth_required";
   $: connected = binding?.status === "complete" || (!binding && !!existing && !needsAuthentication);
   $: canDetectGroups = ["feishu", "wecom", "dingtalk"].includes(providerId);
-  $: ready = binding?.status === "complete" || existing?.connectionStatus === "ready";
-  $: busyConnection = existing?.connectionStatus === "connecting" || existing?.connectionStatus === "reconnecting";
+  $: connectionStatus = binding ? binding.connectionStatus : existing?.connectionStatus;
+  $: ready = connectionStatus === "ready";
+  $: busyConnection = connectionStatus === "connecting" || connectionStatus === "reconnecting";
   $: displayedName = channelName || binding?.botName || existing?.botName || defaultName || `${providerName} 1`;
+  $: botUrl = binding ? binding.botUrl : existing?.botUrl;
+  $: scanHint = providerId === "weixin" ? "用微信扫码，在手机确认后返回"
+    : providerId === "feishu" ? "用飞书扫码创建，打开机器人后返回"
+    : providerId === "wecom" ? "用企业微信扫码创建，给机器人发私信后返回"
+    : "用钉钉扫码创建，打开机器人发私信后返回";
+  $: groupHint = providerId === "feishu" ? "把机器人加入群聊，点击刷新群聊"
+    : providerId === "wecom" ? "把机器人加入群聊，在群内@它发消息"
+    : "把机器人加入内部群，在群内@它发消息";
 
   function mergeTargets(items: ChannelTarget[]) {
     const merged = new Map<string, ChannelTarget>();
@@ -68,6 +80,13 @@
     selectedTargets = selectedTargets.map((item) => item.id === target.id && item.kind === target.kind ? updated : item);
   }
 
+  async function openBot() {
+    if (!botUrl) return;
+    botError = "";
+    try { await desktopApi.openExternalUrl(botUrl); }
+    catch (cause) { botError = cause instanceof Error ? cause.message : String(cause); }
+  }
+
   function stop() {
     generation += 1;
     clearTimeout(timer);
@@ -75,6 +94,7 @@
     const id = sessionId;
     sessionId = null;
     binding = null;
+    botError = "";
     if (id) void desktopApi.cancelChannelBinding(id).catch(() => {});
     if (editingChannelId) {
       const editingId = editingChannelId;
@@ -96,7 +116,7 @@
       const image = await QRCode.toDataURL(next.qrUrl, { width: 232, margin: 2, errorCorrectionLevel: "M" });
       if (request === generation) { qrImage = image; renderedQrUrl = next.qrUrl; }
     }
-    if (["waiting", "scanned", "complete"].includes(next.status) && request === generation) {
+    if (["waiting", "scanned", "needs_verification", "complete"].includes(next.status) && request === generation) {
       timer = setTimeout(() => poll(next.id, request), 2000);
     }
   }
@@ -111,6 +131,8 @@
 
   async function start() {
     stop();
+    verificationCode = "";
+    submittingCode = false;
     selectedTargets = [];
     detectedTargets = [];
     groupsDetected = false;
@@ -135,6 +157,28 @@
     } finally {
       if (request === generation) pending = false;
     }
+  }
+
+  async function submitVerification() {
+    if (!sessionId || submittingCode) return;
+    const id = sessionId;
+    // 提交结果取代本阶段轮询；已发出的旧状态响应不得回退界面。
+    const request = ++generation;
+    clearTimeout(timer);
+    submittingCode = true;
+    error = "";
+    try {
+      const next = await desktopApi.submitChannelBindingVerification(id, verificationCode.trim());
+      if (request !== generation) return;
+      clearTimeout(timer);
+      verificationCode = "";
+      await apply(next, request);
+    } catch (cause) {
+      if (request === generation) {
+        error = cause instanceof Error ? cause.message : String(cause);
+        timer = setTimeout(() => poll(id, request), 2000);
+      }
+    } finally { if (request === generation) submittingCode = false; }
   }
 
   function isSelected(target: ChannelTarget) {
@@ -188,13 +232,17 @@
   {#if pending || (binding?.status === "waiting" && !qrImage)}<div class="qr-stage" role="status" aria-label="正在加载二维码"><span class="spinner" aria-hidden="true"></span></div>
   {:else if connected}
     <div class="connected-state">
-      <div class="connected-icon" role="img" aria-label={ready ? `已连接${providerName}` : busyConnection ? `${providerName}连接中` : `${providerName}连接未就绪`}><ProviderIcon {providerId} name="" size={64} /><span class="connection-mark" class:ready class:connecting={busyConnection}>{#if ready}<Check size={17} />{:else if busyConnection}<LoaderCircle size={17} />{:else if existing?.connectionStatus === "failed"}<CircleAlert size={17} />{:else}<Pause size={17} />{/if}</span></div>
+      <div class="connected-icon" role="img" aria-label={ready ? `已连接${providerName}` : busyConnection ? `${providerName}连接中` : `${providerName}连接未就绪`}><ProviderIcon {providerId} name="" size={64} /><span class="connection-mark" class:ready class:connecting={busyConnection}>{#if ready}<Check size={17} />{:else if busyConnection}<LoaderCircle size={17} />{:else if connectionStatus === "failed"}<CircleAlert size={17} />{:else}<Pause size={17} />{/if}</span></div>
       <div class="name-row"><input bind:this={nameInput} class="channel-name" aria-label="渠道名称" value={displayedName} placeholder={defaultName} readonly={!editingName} on:input={(event) => channelName = event.currentTarget.value} on:blur={() => editingName = false} /><button class="binding-retry" aria-label="编辑渠道名称" title="编辑名称" on:click={() => { editingName = true; nameInput.focus(); nameInput.select(); }}><Pencil size={13} /></button></div>
-      {#if selectedTargets.length}<div class="connected-recipients" aria-label="已选接收对象">{#each selectedTargets as target, index (`${target.kind}:${target.id}`)}<RecipientChip {target} {index} />{/each}</div>{:else}<p role="status">{targets.length ? "请选择通知接收位置。" : "向机器人发送一条私信，接收对象会自动显示。"}</p>{/if}
+      {#if connectionStatus === "connection_conflict"}<p class="binding-message" role="alert">连接被其他实例接管。请回到通知页，停用后重新启用。</p>{/if}
+      {#if botUrl}<button class="binding-retry" on:click={openBot}>{providerId === "dingtalk" ? "查看钉钉机器人" : "打开机器人"}</button>{/if}
+      {#if botError}<p role="alert">{botError}</p>{/if}
+      {#if selectedTargets.length}<div class="connected-recipients" aria-label="已选接收对象">{#each selectedTargets as target, index (`${target.kind}:${target.id}`)}<RecipientChip {target} {index} />{/each}</div>{/if}
+      {#if !selectedTargets.length}<p role="status">{!ready ? busyConnection ? `账户已授权，正在连接${providerName}。` : `账户已授权，${providerName}连接未就绪。请检查网络后重试。` : binding?.message || (targets.length ? "请选择通知接收位置。" : providerId === "dingtalk" ? "打开机器人发条私信，返回这里继续" : "给机器人发条私信，返回这里继续")}</p>{/if}
     </div>
     <details class="recipient-settings" bind:open={recipientSettingsOpen}><summary>接收位置</summary>
       {#if canDetectGroups}<div class="group-tools"><span>{providerId === "feishu" ? "机器人所在群聊" : "已识别的群聊"}</span><button class="binding-retry" disabled={detecting} on:click={detectGroups}>{detecting ? "正在刷新…" : "刷新群聊"}</button></div>{/if}
-      {#if providerId === "wecom" || providerId === "dingtalk"}<p class="binding-message">在群内 @机器人发送一条消息，群聊会自动显示。</p>{/if}
+      {#if canDetectGroups}<p class="binding-message">{groupHint}</p>{/if}
       {#if groupsError}<p role="alert">{groupsError}</p>{/if}
       {#if targets.length}
       <fieldset class="binding-targets" aria-label="通知接收对象">{#each targets as target, index (`${target.kind}:${target.id}`)}<div class="target-row"><label><input aria-label={`${targetLabel(target, index)} ${target.kind === "user" ? "个人" : "群聊"}`} type="checkbox" checked={isSelected(target)} on:change={() => toggleTarget(target)} /><RecipientChip {target} {index} /></label><button class="binding-retry" aria-label={`命名${targetLabel(target, index)}`} title="修改显示名称" on:click={() => editingTargetKey = editingTargetKey === `${target.kind}:${target.id}` ? "" : `${target.kind}:${target.id}`}><Pencil size={12} /></button>{#if editingTargetKey === `${target.kind}:${target.id}`}<input class="target-name" aria-label="接收对象名称" value={targetLabel(target, index)} on:change={(event) => renameTarget(target, event.currentTarget.value)} />{/if}</div>{/each}</fieldset>
@@ -202,9 +250,15 @@
     <details><summary>手动填写接收对象</summary><label class="binding-field">接收对象 ID<input aria-label="接收对象 ID" bind:value={targetId} /></label>{#if providerId !== "weixin"}<label class="binding-field">对象类型<select aria-label="对象类型" bind:value={targetKind}><option value="chat">群聊</option><option value="user">个人</option></select></label>{/if}<button class="binding-retry" disabled={!targetId.trim()} on:click={addManualTarget}>添加接收对象</button></details>
     <div class="reconnect-tools"><button class="binding-retry" on:click={start}>重新扫码</button></div>
     </details>
+  {:else if binding?.status === "needs_verification"}
+    <form class="qr-stage" on:submit|preventDefault={submitVerification}>
+      <p class="binding-message">输入手机配对码，确认后继续</p>
+      <label class="binding-field">手机配对码<input aria-label="手机配对码" inputmode="numeric" autocomplete="one-time-code" maxlength="6" bind:value={verificationCode} /></label>
+      <button class="binding-retry" type="submit" disabled={submittingCode || !/^\d{6}$/.test(verificationCode.trim())}>{submittingCode ? "正在验证…" : "确认配对"}</button>
+    </form>
   {:else if binding?.status === "waiting" || binding?.status === "scanned"}
     <div class="qr-stage">{#if qrImage}<img class="binding-qr" src={qrImage} alt={`使用${providerName}扫描二维码`} width="232" height="232" />{/if}
-    {#if binding.status === "scanned"}<p role="status">请在手机上确认。</p>{/if}</div>
+    <p class="binding-message scan-hint" role="status">{scanHint}</p></div>
   {:else if binding?.status === "expired"}
     <div class="qr-stage"><button class="qr-refresh" aria-label="刷新二维码" title="二维码已过期，刷新" on:click={start}><RefreshCw size={25} aria-hidden="true" /></button></div>
   {:else if binding?.status === "failed" || binding?.status === "cancelled"}
@@ -247,6 +301,7 @@
   input:not([type="checkbox"]), select { width: 100%; min-height: 34px; box-sizing: border-box; padding: 6px 9px; color: var(--foreground); background: var(--surface); border: 1px solid var(--control-border); border-radius: 5px; font: inherit; }
   details { font-size: 12px; color: var(--muted); } summary { cursor: pointer; }
   .binding-message { color: var(--muted); }
+  .scan-hint { white-space: nowrap; }
   [role="alert"] { color: var(--danger); }
   button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 </style>

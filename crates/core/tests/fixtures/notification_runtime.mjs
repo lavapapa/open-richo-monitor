@@ -9,6 +9,7 @@ let configured = 0;
 let lastConfiguration;
 let lastBindingRequest;
 let ignoreEof = false;
+let ignoreStatus = false;
 const write = (value) => process.stdout.write(`${JSON.stringify(value)}\n`);
 const lines = readline.createInterface({ input: process.stdin });
 for await (const line of lines) {
@@ -20,11 +21,12 @@ async function handle(line) {
   if (method === 'configure') {
     configured += 1;
     lastConfiguration = params;
+    ignoreStatus = params.accounts.some(account => account.credentials.ignoreStatus);
     accounts.clear();
     for (const account of params.accounts) {
       accounts.set(account.id, account);
       ignoreEof ||= !!account.credentials.ignoreEof;
-      write({ event: 'account', data: { id: account.id, status: account.enabled ? (account.credentials.connectDelayMs ? 'connecting' : 'ready') : 'stopped', targets: account.targets } });
+      write({ event: 'account', data: { id: account.id, status: account.enabled ? (account.credentials.connectionStatus ?? (account.credentials.connectDelayMs ? 'connecting' : 'ready')) : 'stopped', targets: account.targets } });
       if (account.enabled && account.credentials.connectDelayMs) setTimeout(() => {
         if (accounts.get(account.id)?.enabled) write({ event: 'account', data: { id: account.id, status: 'ready', targets: account.targets } });
       }, account.credentials.connectDelayMs);
@@ -49,7 +51,7 @@ async function handle(line) {
     recipientCounts.set(recipient,(recipientCounts.get(recipient) ?? 0) + 1);
     if (account?.credentials.dropConnection) process.exit(0);
     if (account?.credentials.delayMs) await new Promise((resolve) => setTimeout(resolve, account.credentials.delayMs));
-    if (account?.credentials.updateContext) write({ event: 'credentials', data: { accountId: params.accountId, credentials: { contextTokens: { [params.target.id]: 'fresh-private-context' } } } });
+    if (account?.credentials.updateContext) write({ event: 'credentials', data: { accountId: params.accountId, credentials: { contextTokens: { ...account.credentials.contextTokens, [params.target.id]: 'fresh-private-context' } } } });
     result = { outcome: account?.credentials.recipientOutcomes?.[params.target.id] ?? account?.credentials.fixtureOutcome ?? 'accepted', message: account?.credentials.recipientMessages?.[params.target.id] ?? 'fixture result', retryable: !!account?.credentials.retryable };
   } else if (method === 'detect_groups' || method === 'detect_binding_groups') {
     result = { targets: [{id:'chat-a',kind:'chat',label:'群组 A'},{id:'chat-b',kind:'chat',label:'群组 B'}] };
@@ -57,7 +59,10 @@ async function handle(line) {
     write({ event: 'credentials', data: { accountId: params.accountId, credentials: { targetAliases: params.aliases } } });
   } else if (method === 'fixture_target_name') {
     write({ event: 'target', data: { accountId: params.accountId, target: params.target } });
+  } else if (method === 'fixture_context_update') {
+    write({ event: 'credentials', data: { accountId: params.accountId, credentials: { contextTokens: { owner: 'old-session-context' }, contextMetadata: { owner: { seq: '99' } } } } });
   } else if (method === 'status') {
+    if (ignoreStatus) return;
     result = { pid: process.pid, configured, sendCounts: Object.fromEntries(sendCounts),recipientCounts:Object.fromEntries(recipientCounts), configuration: lastConfiguration, lastBindingRequest };
   } else if (method === 'hang') {
     await new Promise(() => {});

@@ -2,13 +2,13 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChannelBinding as Binding, ChannelTarget } from "./desktop-api";
 
-const api = vi.hoisted(() => ({ beginChannelBinding: vi.fn(), beginChannelRebinding: vi.fn(), beginChannelEditing: vi.fn(), endChannelEditing: vi.fn(), detectChannelGroups: vi.fn(), detectBindingGroups: vi.fn(), channelBindingStatus: vi.fn(), cancelChannelBinding: vi.fn() }));
+const api = vi.hoisted(() => ({ beginChannelBinding: vi.fn(), beginChannelRebinding: vi.fn(), beginChannelEditing: vi.fn(), endChannelEditing: vi.fn(), detectChannelGroups: vi.fn(), detectBindingGroups: vi.fn(), channelBindingStatus: vi.fn(), cancelChannelBinding: vi.fn(), submitChannelBindingVerification: vi.fn(), openExternalUrl: vi.fn() }));
 const qr = vi.hoisted(() => ({ toDataURL: vi.fn(async () => "data:image/png;base64,cXI=") }));
 vi.mock("./desktop-api", () => ({ desktopApi: api }));
 vi.mock("qrcode", () => ({ default: qr }));
 import ChannelBinding from "./ChannelBinding.svelte";
 
-const waiting: Binding = { id: "binding-1", provider: "feishu", status: "waiting", qrUrl: "https://official.example/registration", targets: [] };
+const waiting: Binding = { id: "binding-1", provider: "feishu", status: "waiting", connectionStatus: "ready", qrUrl: "https://official.example/registration", targets: [] };
 const groups: ChannelTarget[] = [{ id: "chat-1", kind: "chat", label: "摄影群" }, { id: "chat-2", kind: "chat", label: "库存群" }];
 beforeEach(() => {
   vi.useFakeTimers();
@@ -20,12 +20,130 @@ beforeEach(() => {
   api.detectBindingGroups.mockReset().mockResolvedValue([]);
   api.channelBindingStatus.mockReset().mockResolvedValue(waiting);
   api.cancelChannelBinding.mockReset().mockResolvedValue({ message: null });
+  api.openExternalUrl.mockReset().mockResolvedValue({ message: null });
   qr.toDataURL.mockClear();
 });
 afterEach(() => { cleanup(); vi.useRealTimers(); });
 const flush = () => vi.advanceTimersByTimeAsync(0);
 
 describe("通知扫码连接", () => {
+  it.each([
+    ["weixin", "微信", "用微信扫码，在手机确认后返回"],
+    ["feishu", "飞书", "用飞书扫码创建，打开机器人后返回"],
+    ["wecom", "企业微信", "用企业微信扫码创建，给机器人发私信后返回"],
+    ["dingtalk", "钉钉", "用钉钉扫码创建，打开机器人发私信后返回"],
+  ])("%s 在二维码下方保留一条具体操作提示", async (providerId, providerName, hint) => {
+    api.beginChannelBinding.mockResolvedValue({ ...waiting, provider: providerId });
+    const view = render(ChannelBinding, { providerId, providerName });
+    await flush();
+    expect(screen.getByText(hint).closest(".qr-stage")?.querySelector("img")).toBeTruthy();
+    await view.rerender({ binding: { ...waiting, provider: providerId, status: "scanned" } });
+    expect(screen.getAllByText(hint)).toHaveLength(1);
+    expect(screen.queryByText("请在手机上确认。")).toBeNull();
+  });
+
+  it.each([
+    ["feishu", "飞书", "把机器人加入群聊，点击刷新群聊"],
+    ["wecom", "企业微信", "把机器人加入群聊，在群内@它发消息"],
+    ["dingtalk", "钉钉", "把机器人加入内部群，在群内@它发消息"],
+  ])("%s 接收位置使用平台对应的群聊步骤", async (providerId, providerName, hint) => {
+    api.beginChannelBinding.mockResolvedValue({ ...waiting, provider: providerId, status: "complete", targets: [{ id: "user", kind: "user", label: "扫码账号" }] });
+    render(ChannelBinding, { providerId, providerName });
+    await flush();
+    expect(screen.getByText(hint).closest("details")?.querySelector("button")).toBeTruthy();
+  });
+
+  it("手机要求配对码时可提交，继续使用原扫码会话", async () => {
+    api.beginChannelBinding.mockResolvedValue({ ...waiting, provider: "weixin", status: "needs_verification" });
+    api.submitChannelBindingVerification.mockResolvedValue({ ...waiting, provider: "weixin", status: "scanned" });
+    render(ChannelBinding, { providerId: "weixin", providerName: "微信" });
+    await flush();
+    expect(screen.getByText("输入手机配对码，确认后继续")).toBeTruthy();
+    await fireEvent.input(screen.getByLabelText("手机配对码"), { target: { value: "123456" } });
+    await fireEvent.click(screen.getByRole("button", { name: "确认配对" }));
+    await flush();
+    expect(api.submitChannelBindingVerification).toHaveBeenCalledWith("binding-1", "123456");
+    expect(api.beginChannelBinding).toHaveBeenCalledTimes(1);
+  });
+  it("微信扫码账号在线即可直接测试，不要求首条私信", async () => {
+    api.beginChannelBinding.mockResolvedValue({ ...waiting, provider: "weixin", status: "complete", connectionStatus: "ready", targets: [{ id: "wx-user", kind: "user", label: "扫码账号" }] });
+    render(ChannelBinding, { providerId: "weixin", providerName: "微信" });
+    await flush();
+    expect(screen.getByLabelText("已选接收对象").textContent).toContain("扫码账号");
+    expect(screen.queryByText(/识别会话后再发送测试/)).toBeNull();
+    expect(screen.getByRole("img", { name: "已连接微信" })).toBeTruthy();
+  });
+  it("钉钉未提供名称时明确区分渠道名，并提供官方机器人入口和自动识别指引", async () => {
+    const botUrl = "https://open-dev.dingtalk.com/fe/app#/corp/robot";
+    api.beginChannelBinding.mockResolvedValue({ ...waiting, provider: "dingtalk", status: "complete", connectionStatus: "ready", targets: [], botUrl, appName: "授权创建的应用名称" });
+    render(ChannelBinding, { providerId: "dingtalk", providerName: "钉钉", defaultName: "钉钉 1" });
+    await flush();
+    expect(screen.getByText("打开机器人发条私信，返回这里继续")).toBeTruthy();
+    expect(screen.queryByText(/钉钉尚未返回机器人名称/)).toBeNull();
+    await fireEvent.click(screen.getByRole("button", { name: "查看钉钉机器人" }));
+    expect(api.openExternalUrl).toHaveBeenCalledExactlyOnceWith(botUrl);
+    expect(screen.queryByRole("checkbox")).toBeNull();
+  });
+
+  it("使用绑定的官方入口打开机器人，重新授权时不沿用旧机器人入口", async () => {
+    const botUrl = "https://applink.feishu.cn/client/bot/open?appId=cli-bound";
+    api.beginChannelBinding.mockResolvedValue({ ...waiting, status: "complete", connectionStatus: "ready", targets: [], botUrl });
+    const view = render(ChannelBinding, { providerId: "feishu", providerName: "飞书" });
+    await flush();
+    await fireEvent.click(screen.getByRole("button", { name: "打开机器人" }));
+    expect(api.openExternalUrl).toHaveBeenCalledExactlyOnceWith(botUrl);
+    await view.rerender({ binding: { ...waiting, status: "complete", connectionStatus: "ready" }, existing: { id: "stored", name: "旧账号", providerId: "feishu", providerName: "飞书", enabled: false, configuredFieldKeys: [], subscriptions: [], lastTest: null, lastDelivery: null, botUrl } });
+    expect(screen.queryByRole("button", { name: "打开机器人" })).toBeNull();
+  });
+  it("打开机器人失败仅重试链接，保持原绑定与接收对象", async () => {
+    const botUrl = "https://applink.feishu.cn/client/bot/open?appId=cli-bound";
+    api.beginChannelBinding.mockResolvedValue({ ...waiting, status: "complete", targets: [{ id: "user", kind: "user", label: "扫码账号" }], botUrl });
+    api.openExternalUrl.mockRejectedValueOnce(new Error("无法打开链接"));
+    render(ChannelBinding, { providerId: "feishu", providerName: "飞书" });
+    await flush();
+    await fireEvent.click(screen.getByRole("button", { name: "打开机器人" }));
+    expect(screen.getByRole("alert").textContent).toContain("无法打开链接");
+    expect(screen.queryByRole("button", { name: "重新获取二维码" })).toBeNull();
+    await fireEvent.click(screen.getByRole("button", { name: "打开机器人" }));
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(api.beginChannelBinding).toHaveBeenCalledTimes(1);
+    expect(screen.getByLabelText("已选接收对象").textContent).toContain("扫码账号");
+  });
+  it("配对码确认后丢弃迟到的验证码轮询，保持已连接状态", async () => {
+    let resolvePoll!: (value: Binding) => void;
+    const verifying: Binding = { ...waiting, provider: "weixin", status: "needs_verification" };
+    api.beginChannelBinding.mockResolvedValue(verifying);
+    api.channelBindingStatus.mockReturnValue(new Promise<Binding>((done) => { resolvePoll = done; }));
+    api.submitChannelBindingVerification.mockResolvedValue({ ...waiting, provider: "weixin", status: "complete", targets: [{ id: "wx-user", kind: "user", label: "扫码账号" }] });
+    render(ChannelBinding, { providerId: "weixin", providerName: "微信" });
+    await flush();
+    await vi.advanceTimersByTimeAsync(2000);
+    await fireEvent.input(screen.getByLabelText("手机配对码"), { target: { value: "123456" } });
+    await fireEvent.click(screen.getByRole("button", { name: "确认配对" }));
+    await flush();
+    resolvePoll(verifying);
+    await flush();
+    expect(screen.getByRole("img", { name: "已连接微信" })).toBeTruthy();
+    expect(screen.queryByLabelText("手机配对码")).toBeNull();
+  });
+  it("扫码授权完成后按实际连接显示状态，有效私信进入默认接收对象", async () => {
+    api.beginChannelBinding.mockResolvedValue({ ...waiting, provider: "dingtalk", status: "complete", connectionStatus: "connecting", targets: [] });
+    render(ChannelBinding, { providerId: "dingtalk", providerName: "钉钉" });
+    await flush();
+    expect(screen.getByRole("img", { name: "钉钉连接中" }).querySelector(".connection-mark.ready")).toBeNull();
+    expect(screen.getByRole("status").textContent).toContain("正在连接钉钉");
+    api.channelBindingStatus.mockResolvedValue({ ...waiting, provider: "dingtalk", status: "complete", connectionStatus: "ready", targets: [], message: "已收到私信，钉钉未提供可用于通知的员工 ID。请使用机器人所属组织的账号发送私信，或在群内 @机器人后选择群聊。" });
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(screen.getByRole("img", { name: "已连接钉钉" })).toBeTruthy();
+    expect(screen.getByRole("status").textContent).toContain("已收到私信");
+    api.channelBindingStatus.mockResolvedValue({ ...waiting, provider: "dingtalk", status: "complete", connectionStatus: "ready", targets: [{ id: "staff-1", kind: "user", label: "成员" }] });
+    await vi.advanceTimersByTimeAsync(2000);
+    expect((screen.getByRole("checkbox", { name: "成员 个人" }) as HTMLInputElement).checked).toBe(true);
+    expect(screen.queryByText(/已收到私信/)).toBeNull();
+    api.channelBindingStatus.mockResolvedValue({ ...waiting, provider: "dingtalk", status: "complete", connectionStatus: "failed", targets: [] });
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(screen.getByRole("img", { name: "钉钉连接未就绪" }).querySelector(".connection-mark.ready")).toBeNull();
+  });
   it("扫码完成显示图标，名称按自定义和机器人名称取值，接收对象可命名", async () => {
     api.beginChannelBinding.mockResolvedValue({ ...waiting, status: "complete", botName: "库存助手", targets: [{ id: "opaque-chat-id", kind: "chat", label: "opaque-chat-id" }] });
     const view = render(ChannelBinding, { providerId: "feishu", providerName: "飞书", defaultName: "飞书 2" });
@@ -219,9 +337,9 @@ describe("通知扫码连接", () => {
     expect(screen.getByAltText("使用飞书扫描二维码").getAttribute("src")).toMatch(/^data:/);
     api.channelBindingStatus.mockResolvedValueOnce({ ...waiting, status: "scanned" }).mockResolvedValueOnce({ ...waiting, status: "complete" }).mockResolvedValue({ ...waiting, status: "complete", targets: [{ id: "chat-1", kind: "chat", label: "摄影群" }] });
     await vi.advanceTimersByTimeAsync(2000);
-    expect(screen.getByRole("status").textContent).toContain("手机上确认");
+    expect(screen.getByRole("status").textContent).toContain("用飞书扫码创建，打开机器人后返回");
     await vi.advanceTimersByTimeAsync(2000);
-    expect(screen.getByRole("status").textContent).toContain("向机器人发送一条私信");
+    expect(screen.getByRole("status").textContent).toContain("给机器人发条私信，返回这里继续");
     await vi.advanceTimersByTimeAsync(2000);
     expect((screen.getByRole("checkbox", { name: "摄影群 群聊" }) as HTMLInputElement).checked).toBe(false);
     expect(qr.toDataURL).toHaveBeenCalledOnce();

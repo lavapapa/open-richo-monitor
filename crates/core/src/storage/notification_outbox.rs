@@ -21,6 +21,7 @@ pub struct OutboxJob {
     pub generation: u64,
     pub event: ListingEvent,
     pub target: Option<crate::notifications::NotificationTarget>,
+    pub waited_for_connection: bool,
 }
 
 pub(super) fn initialize(conn: &Connection) -> Result<(), StorageError> {
@@ -46,6 +47,12 @@ pub(super) fn initialize(conn: &Connection) -> Result<(), StorageError> {
         CREATE INDEX IF NOT EXISTS notification_outbox_pending
             ON notification_outbox(channel_id,status,id);",
     )?;
+    if !super::column_exists(conn, "notification_outbox", "notification_details_json")? {
+        conn.execute(
+            "ALTER TABLE notification_outbox ADD COLUMN notification_details_json TEXT",
+            [],
+        )?;
+    }
     Ok(())
 }
 
@@ -105,6 +112,8 @@ fn record_route_delivery(
 
 pub(super) fn enqueue_event(conn: &Connection, event: &ListingEvent) -> Result<(), StorageError> {
     let now_ms = event.observed_at_ms;
+    let details_json =
+        serde_json::to_string(&event.notification_details).map_err(StorageError::ConfigJson)?;
     prune_results(conn, now_ms)?;
     prune_prominent_alerts(conn, now_ms)?;
     let enabled_accounts = conn
@@ -161,7 +170,7 @@ pub(super) fn enqueue_event(conn: &Connection, event: &ListingEvent) -> Result<(
             let updated = conn.execute(
                 "UPDATE notification_outbox SET event_id=?1,product_id=?2,sku_id=?3,
                     event_kind=?4,stock=?5,request_sequence=?6,product_generation=?7,
-                    observed_at_ms=?8
+                    observed_at_ms=?8,notification_details_json=?11
                  WHERE id=(SELECT id FROM notification_outbox WHERE channel_id=?9
                     AND product_key=?10 AND product_generation=?7 AND status='pending'
                     ORDER BY id LIMIT 1)",
@@ -176,6 +185,7 @@ pub(super) fn enqueue_event(conn: &Connection, event: &ListingEvent) -> Result<(
                     event.observed_at_ms,
                     channel_id,
                     event.product.key,
+                    details_json,
                 ],
             )?;
             if updated > 0 {
@@ -197,13 +207,13 @@ pub(super) fn enqueue_event(conn: &Connection, event: &ListingEvent) -> Result<(
         };
         conn.execute("INSERT OR IGNORE INTO notification_outbox(
             event_id,channel_id,product_key,product_id,sku_id,event_kind,stock,request_sequence,
-            product_generation,observed_at_ms,status,finished_at_ms,error)
+            product_generation,observed_at_ms,status,finished_at_ms,error,notification_details_json)
             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,
-                COALESCE((SELECT generation FROM product_rounds WHERE product_key=?3),0),?9,?10,?11,?12)",
+                COALESCE((SELECT generation FROM product_rounds WHERE product_key=?3),0),?9,?10,?11,?12,?13)",
             params![event.id, channel_id, event.product.key, event.product.product_id,
                 event.product.sku_id, event_kind_to_db(event.kind), event.stock,
                 event.request_sequence as i64, event.observed_at_ms, status,
-                if error.is_some() { Some(now_ms) } else { None }, error])?;
+                if error.is_some() { Some(now_ms) } else { None }, error, details_json])?;
         if let Some(error) = error {
             if channel_id != SYSTEM_CHANNEL && channel_id != PROMINENT_CHANNEL {
                 conn.execute("INSERT INTO notification_deliveries(channel_id,outcome,event_kind,at_ms,message)
@@ -252,6 +262,7 @@ fn job_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<OutboxJob> {
         id: row.get(0)?,
         channel_id: row.get(2)?,
         target: None,
+        waited_for_connection: false,
         generation: row.get::<_, i64>(10)? as u64,
         event: ListingEvent {
             id: row.get(1)?,
@@ -264,6 +275,7 @@ fn job_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<OutboxJob> {
             stock: row.get(7)?,
             request_sequence: row.get::<_, i64>(8)? as u64,
             observed_at_ms: row.get(9)?,
+            notification_details: super::notification_details_from_json(row.get(11)?)?,
         },
     })
 }
@@ -328,7 +340,7 @@ impl Storage {
             return Err(StorageError::ProminentQueueOverflow);
         }
         let job = tx.query_row("SELECT id,event_id,channel_id,product_key,product_id,sku_id,
-            event_kind,stock,request_sequence,observed_at_ms,product_generation FROM notification_outbox
+            event_kind,stock,request_sequence,observed_at_ms,product_generation,notification_details_json FROM notification_outbox
             WHERE channel_id='__prominent__' AND status='pending' ORDER BY id LIMIT 1", [], job_from_row).optional()?;
         tx.commit()?;
         Ok(job)
@@ -345,8 +357,24 @@ impl Storage {
         &mut self,
         now_ms: i64,
     ) -> Result<Option<OutboxJob>, StorageError> {
+        self.claim_channel_notification_inner(now_ms, None)
+    }
+
+    pub fn claim_ready_channel_notification(
+        &mut self,
+        now_ms: i64,
+        ready_accounts: &[String],
+    ) -> Result<Option<OutboxJob>, StorageError> {
+        self.claim_channel_notification_inner(now_ms, Some(ready_accounts))
+    }
+
+    fn claim_channel_notification_inner(
+        &mut self,
+        now_ms: i64,
+        ready_accounts: Option<&[String]>,
+    ) -> Result<Option<OutboxJob>, StorageError> {
         loop {
-            let job = self.claim_notification(now_ms, false)?;
+            let job = self.claim_notification(now_ms, false, ready_accounts)?;
             let Some(mut job) = job else { return Ok(None) };
             if self.product_generation(&job.event.product.key)? != job.generation {
                 self.finish_notification(job.id, "skipped", "", now_ms)?;
@@ -366,8 +394,25 @@ impl Storage {
                     continue;
                 }
             }
+            job.waited_for_connection = self.conn.query_row(
+                "SELECT error='等待连接恢复' FROM notification_outbox WHERE id=?1",
+                [job.id], |row| Ok(row.get::<_, Option<bool>>(0)?.unwrap_or(false)),
+            )?;
+            if ready_accounts.is_some() && (!self.notification_event_is_enabled(&job.channel_id, subscription(&job.event), &job.event.product.key, Some(job.generation))?
+                || (job.waited_for_connection && !self.waiting_notification_is_current(&job.event, now_ms)?))
+            {
+                self.finish_notification(job.id, "skipped", "事件已过期或通知范围已取消", now_ms)?;
+                continue;
+            }
             return Ok(Some(job));
         }
+    }
+
+    pub fn waiting_notification_is_current(&self, event: &ListingEvent, now_ms: i64) -> Result<bool, StorageError> {
+        if subscription(event) != "stock_available" { return Ok(true); }
+        if event.observed_at_ms < now_ms.saturating_sub(PROMINENT_MAX_AGE_MS) { return Ok(false); }
+        Ok(self.observation(&event.product.key)?.is_some_and(|latest|
+            latest.state.is_show == 1 && (event.stock == 0.0 || latest.state.stock.is_some_and(|stock| stock > 0.0))))
     }
 
     pub fn claim_system_notification(
@@ -375,7 +420,7 @@ impl Storage {
         now_ms: i64,
     ) -> Result<Option<OutboxJob>, StorageError> {
         loop {
-            let job = self.claim_notification(now_ms, true)?;
+            let job = self.claim_notification(now_ms, true, None)?;
             let Some(job) = job else { return Ok(None) };
             let product_enabled = self
                 .product_configs()?
@@ -396,8 +441,16 @@ impl Storage {
         &mut self,
         now_ms: i64,
         system: bool,
+        ready_accounts: Option<&[String]>,
     ) -> Result<Option<OutboxJob>, StorageError> {
         let tx = self.conn.transaction()?;
+        let ready_json = ready_accounts.map(|accounts| serde_json::to_string(accounts).expect("字符串数组可序列化"));
+        if let Some(ref ready) = ready_json {
+            tx.execute("UPDATE notification_outbox SET error='等待连接恢复'
+                WHERE status='pending' AND channel_id NOT IN ('__system__','__prominent__')
+                AND COALESCE((SELECT account_id FROM notification_routes WHERE 'route:'||id=channel_id),channel_id)
+                    NOT IN (SELECT value FROM json_each(?1))", [ready])?;
+        }
         prune_results(&tx, now_ms)?;
         let interrupted = tx
             .prepare(
@@ -472,13 +525,17 @@ impl Storage {
             }
         }
         let job = tx.query_row("SELECT id,event_id,channel_id,product_key,product_id,sku_id,
-            event_kind,stock,request_sequence,observed_at_ms,product_generation FROM notification_outbox
+            event_kind,stock,request_sequence,observed_at_ms,product_generation,notification_details_json FROM notification_outbox
             WHERE status='pending'
             AND (channel_id='__system__')=?2 AND channel_id!='__prominent__'
+            AND (?3 IS NULL OR COALESCE((SELECT account_id FROM notification_routes WHERE 'route:'||id=channel_id),channel_id)
+                IN (SELECT value FROM json_each(?3)) OR NOT EXISTS (
+                    SELECT 1 FROM notification_channels c WHERE c.enabled=1 AND c.tested=1
+                    AND c.id=COALESCE((SELECT account_id FROM notification_routes WHERE 'route:'||id=channel_id),channel_id)))
             AND (?2 OR NOT EXISTS(SELECT 1 FROM notification_outbox active
                 WHERE active.channel_id=notification_outbox.channel_id AND active.status='inflight'))
             ORDER BY id LIMIT 1",
-            params![now_ms.saturating_sub(LEASE_MS),system], job_from_row).optional()?;
+            params![now_ms.saturating_sub(LEASE_MS),system,ready_json], job_from_row).optional()?;
         if let Some(ref job) = job {
             tx.execute(
                 "UPDATE notification_outbox SET status='inflight',claimed_at_ms=?2 WHERE id=?1",
@@ -496,6 +553,11 @@ impl Storage {
         message: &str,
         now_ms: i64,
     ) -> Result<(), StorageError> {
+        if outcome == "deferred" {
+            self.conn.execute("UPDATE notification_outbox SET status='pending',claimed_at_ms=NULL,
+                finished_at_ms=NULL,error='等待连接恢复' WHERE id=?1 AND status='inflight'", [id])?;
+            return Ok(());
+        }
         let status = match outcome {
             "accepted" => "sent",
             "unknown" => "unknown",
@@ -576,6 +638,106 @@ impl Storage {
 mod tests {
     use super::*;
     use crate::availability::{reducer::ObservationReducer, Availability};
+
+    fn waiting_fixture() -> Storage {
+        let mut db = Storage::open_in_memory().unwrap();
+        db.save_product_config(ProductIdentity { key: "p1".into(), product_id: "1".into(), sku_id: None }, "Fixture".into(), "fixture".into(), Some(1)).unwrap();
+        db.set_product_enabled("p1", true).unwrap();
+        db.save_notification_channel("a", "a", "feishu", Some("a"), &["stock_available".into()]).unwrap();
+        db.mark_notification_channel_tested("a").unwrap();
+        db.set_notification_channel_enabled("a", true).unwrap();
+        db
+    }
+
+    #[test]
+    fn waiting_events_expire_and_disabled_accounts_release_pending_jobs() {
+        let mut db = waiting_fixture();
+        observe(&mut db, "p1", "1", 1, 3.0, true, 100);
+        assert!(db.claim_ready_channel_notification(101, &[]).unwrap().is_none());
+        assert!(db.claim_ready_channel_notification(100 + PROMINENT_MAX_AGE_MS + 1, &["a".into()]).unwrap().is_none());
+        observe(&mut db, "p1", "1", 2, 5.0, true, 400_000);
+        assert!(db.claim_ready_channel_notification(400_001, &[]).unwrap().is_none());
+        db.set_notification_channel_enabled("a", false).unwrap();
+        assert!(db.claim_ready_channel_notification(400_002, &[]).unwrap().is_none());
+        let pending: i64 = db.conn.query_row("SELECT count(*) FROM notification_outbox WHERE channel_id='a' AND status='pending'", [], |row|row.get(0)).unwrap();
+        assert_eq!(pending, 0);
+    }
+
+    #[test]
+    fn online_stock_events_are_not_discarded_by_later_sellout() {
+        let mut db = waiting_fixture();
+        observe(&mut db, "p1", "1", 1, 3.0, true, 100);
+        observe(&mut db, "p1", "1", 2, 0.0, true, 101);
+        let job = db.claim_ready_channel_notification(102, &["a".into()]).unwrap().unwrap();
+        assert!(!job.waited_for_connection);
+        assert_eq!(job.event.stock, 3.0);
+    }
+
+    #[test]
+    fn disconnect_after_claim_requeues_only_confirmed_unsubmitted_jobs() {
+        let mut db = waiting_fixture();
+        observe(&mut db, "p1", "1", 1, 3.0, true, 100);
+        let claimed = db.claim_ready_channel_notification(101, &["a".into()]).unwrap().unwrap();
+        db.finish_notification(claimed.id, "deferred", "等待连接恢复", 102).unwrap();
+        assert!(db.claim_ready_channel_notification(103, &[]).unwrap().is_none());
+        let restored = db.claim_ready_channel_notification(104, &["a".into()]).unwrap().unwrap();
+        assert_eq!(restored.id, claimed.id);
+        assert!(restored.waited_for_connection);
+        db.finish_notification(restored.id, "unknown", "未知结果", 105).unwrap();
+        assert!(db.claim_ready_channel_notification(106, &["a".into()]).unwrap().is_none());
+    }
+
+    #[test]
+    fn waiting_event_is_checked_again_before_submission_and_listing_zero_is_preserved() {
+        let mut db = waiting_fixture();
+        observe(&mut db, "p1", "1", 1, 3.0, true, 100);
+        db.claim_ready_channel_notification(101, &[]).unwrap();
+        let job = db.claim_ready_channel_notification(102, &["a".into()]).unwrap().unwrap();
+        assert!(job.waited_for_connection);
+        assert!(db.waiting_notification_is_current(&job.event, 102).unwrap());
+        observe(&mut db, "p1", "1", 2, 0.0, true, 103);
+        assert!(!db.waiting_notification_is_current(&job.event, 104).unwrap());
+        let mut listing = job.event;
+        listing.stock = 0.0;
+        assert!(db.waiting_notification_is_current(&listing, 104).unwrap());
+        observe(&mut db, "p1", "1", 3, 0.0, false, 105);
+        assert!(!db.waiting_notification_is_current(&listing, 106).unwrap());
+    }
+
+    #[test]
+    fn offline_routes_wait_without_blocking_online_routes_and_skip_sold_out_events() {
+        let mut storage = Storage::open_in_memory().unwrap();
+        storage.save_product_config(ProductIdentity { key: "p1".into(), product_id: "1".into(), sku_id: None }, "Fixture".into(), "fixture".into(), Some(1)).unwrap();
+        storage.set_product_enabled("p1", true).unwrap();
+        for id in ["a", "b"] {
+            storage.save_notification_channel(id,id,"feishu",Some(id),&["stock_available".into()]).unwrap();
+            storage.mark_notification_channel_tested(id).unwrap();
+            storage.set_notification_channel_enabled(id,true).unwrap();
+        }
+        observe(&mut storage, "p1", "1", 1, 3.0, true, 100);
+        let fast = storage.claim_ready_channel_notification(101, &["b".into()]).unwrap().unwrap();
+        assert_eq!(fast.channel_id, "b");
+        storage.finish_notification(fast.id,"accepted","",102).unwrap();
+        assert!(storage.claim_ready_channel_notification(103, &[]).unwrap().is_none());
+        observe(&mut storage, "p1", "1", 2, 0.0, true, 110);
+        assert!(storage.claim_ready_channel_notification(111, &["a".into()]).unwrap().is_none());
+        let status: String = storage.conn.query_row("SELECT status FROM notification_outbox WHERE channel_id='a'",[],|row|row.get(0)).unwrap();
+        assert_eq!(status,"skipped");
+    }
+
+    #[test]
+    fn reconnect_delivers_waiting_events_when_goods_remain_available() {
+        let mut storage = Storage::open_in_memory().unwrap();
+        storage.save_product_config(ProductIdentity { key: "p1".into(), product_id: "1".into(), sku_id: None }, "Fixture".into(), "fixture".into(), Some(1)).unwrap();
+        storage.set_product_enabled("p1",true).unwrap();
+        storage.save_notification_channel("a","a","feishu",Some("a"),&["stock_available".into()]).unwrap();
+        storage.mark_notification_channel_tested("a").unwrap();
+        storage.set_notification_channel_enabled("a",true).unwrap();
+        observe(&mut storage,"p1","1",1,3.0,true,100);
+        assert!(storage.claim_ready_channel_notification(101,&[]).unwrap().is_none());
+        let resumed = storage.claim_ready_channel_notification(150,&["a".into()]).unwrap().unwrap();
+        assert_eq!(resumed.event.stock,3.0);
+    }
 
     #[test]
     fn different_routes_claim_in_parallel_while_each_route_keeps_event_order() {

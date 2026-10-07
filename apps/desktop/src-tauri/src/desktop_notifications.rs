@@ -81,8 +81,8 @@ pub(crate) async fn permission_state(_app: &AppHandle) -> Result<PermissionState
 pub(crate) async fn permission_state(app: &AppHandle) -> Result<PermissionState, String> {
     let app_id = windows_app_id(&app.config().identifier, tauri::is_dev()).to_owned();
     tauri::async_runtime::spawn_blocking(move || {
-        let setting = windows_notifier(&app_id)
-            .and_then(|notifier| notifier.Setting())
+        let setting = windows_notifier(&app_id, tauri::is_dev())
+            .and_then(|notifier| windows_notification_setting(&notifier, &app_id, tauri::is_dev()))
             .map_err(|error| format!("Windows 通知权限读取失败，请重新检查：{error}"))?;
         windows_permission_from_setting(setting)
     })
@@ -168,10 +168,100 @@ fn windows_app_id(identifier: &str, is_dev: bool) -> &str {
 #[cfg(target_os = "windows")]
 fn windows_notifier(
     app_id: &str,
+    is_dev: bool,
 ) -> windows::core::Result<windows::UI::Notifications::ToastNotifier> {
+    if !is_dev {
+        // Win32 通知使用 Windows 的 stub CLSID 与协议激活，身份独立于快捷方式索引。
+        let key = windows_registry::CURRENT_USER
+            .create(format!(r"Software\Classes\AppUserModelId\{app_id}"))?;
+        key.set_string("DisplayName", "RichoMonitor")?;
+        key.set_string("CustomActivator", "{DCBCE77E-8D71-4EF1-BF02-3B46C923DA47}")?;
+        let protocol =
+            windows_registry::CURRENT_USER.create(format!(r"Software\Classes\{app_id}"))?;
+        protocol.set_string("", "URL:RichoMonitor")?;
+        protocol.set_string("URL Protocol", "")?;
+        protocol.create(r"shell\open\command")?.set_string(
+            "",
+            format!("\"{}\" \"%1\"", std::env::current_exe()?.display()),
+        )?;
+    }
     windows::UI::Notifications::ToastNotificationManager::CreateToastNotifierWithId(
         &windows::core::HSTRING::from(app_id),
     )
+}
+
+#[cfg(target_os = "windows")]
+fn windows_notification_setting(
+    notifier: &windows::UI::Notifications::ToastNotifier,
+    app_id: &str,
+    is_dev: bool,
+) -> windows::core::Result<windows::UI::Notifications::NotificationSetting> {
+    use windows::{
+        core::{h, Interface, HRESULT, HSTRING},
+        Foundation::{DateTime, IReference, PropertyValue},
+        UI::Notifications::{ToastNotification, ToastNotificationManager},
+    };
+
+    // 焦点刷新与后台权限检查可能同时进入；共用身份初始化与清理过程。
+    static SETTING_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = SETTING_LOCK.lock().unwrap();
+
+    match notifier.Setting() {
+        // 首次投递前 Win32 应用尚无通知平台记录；按微软 Toolkit 的方式无横幅初始化。
+        Err(error) if error.code() == HRESULT(0x80070490u32 as i32) => {
+            let document = windows_toast_document("RichoMonitor", "通知初始化", app_id, is_dev)?;
+            let notification = ToastNotification::CreateToastNotification(&document)?;
+            notification.SetSuppressPopup(true)?;
+            notification.SetTag(h!("initialize"))?;
+            notification.SetGroup(h!("identity"))?;
+            let unix_seconds = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            // WinRT 使用自 1601 年起的 100 纳秒刻度；清理失败时初始化消息也会在 15 秒后过期。
+            let expires = PropertyValue::CreateDateTime(DateTime {
+                UniversalTime: ((unix_seconds + 11_644_473_600 + 15) * 10_000_000) as i64,
+            })?
+            .cast::<IReference<DateTime>>()?;
+            notification.SetExpirationTime(&expires)?;
+            notifier.Show(&notification)?;
+            let setting = wait_for_windows_notification_setting(
+                || notifier.Setting(),
+                std::time::Instant::now() + std::time::Duration::from_secs(2),
+            );
+            let cleanup = ToastNotificationManager::History().and_then(|history| {
+                history.RemoveGroupedTagWithId(
+                    h!("initialize"),
+                    h!("identity"),
+                    &HSTRING::from(app_id),
+                )
+            });
+            if let Err(error) = cleanup {
+                eprintln!("Windows 通知初始化记录清理失败：{error}");
+            }
+            setting
+        }
+        result => result,
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn wait_for_windows_notification_setting(
+    mut read: impl FnMut() -> windows::core::Result<windows::UI::Notifications::NotificationSetting>,
+    deadline: std::time::Instant,
+) -> windows::core::Result<windows::UI::Notifications::NotificationSetting> {
+    loop {
+        let result = read();
+        if !matches!(&result, Err(error) if error.code() == windows::core::HRESULT(0x80070490u32 as i32))
+        {
+            return result;
+        }
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return result;
+        }
+        std::thread::sleep(remaining.min(std::time::Duration::from_millis(50)));
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -197,6 +287,8 @@ fn windows_permission_from_setting(
 fn windows_toast_document(
     title: &str,
     body: &str,
+    app_id: &str,
+    is_dev: bool,
 ) -> windows::core::Result<windows::Data::Xml::Dom::XmlDocument> {
     use windows::{
         core::{h, HSTRING},
@@ -212,7 +304,12 @@ fn windows_toast_document(
     }
     let audio = document.CreateElement(h!("audio"))?;
     audio.SetAttribute(h!("silent"), h!("true"))?;
-    document.DocumentElement()?.AppendChild(&audio)?;
+    let root = document.DocumentElement()?;
+    root.AppendChild(&audio)?;
+    if !is_dev {
+        root.SetAttribute(h!("activationType"), h!("protocol"))?;
+        root.SetAttribute(h!("launch"), &HSTRING::from(format!("{app_id}://open")))?;
+    }
     Ok(document)
 }
 
@@ -220,15 +317,14 @@ fn windows_toast_document(
 async fn send_windows(app: &AppHandle, title: &'static str, body: String) -> Result<(), String> {
     let app_id = windows_app_id(&app.config().identifier, tauri::is_dev()).to_owned();
     tauri::async_runtime::spawn_blocking(move || {
-        let notifier = windows_notifier(&app_id)
+        let notifier = windows_notifier(&app_id, tauri::is_dev())
             .map_err(|error| format!("Windows 通知连接失败，请重新发送：{error}"))?;
-        let setting = notifier
-            .Setting()
+        let setting = windows_notification_setting(&notifier, &app_id, tauri::is_dev())
             .map_err(|error| format!("Windows 通知权限读取失败，请重新检查：{error}"))?;
         if windows_permission_from_setting(setting)? != PermissionState::Granted {
             return Err("Windows 通知已关闭。请在系统设置中开启本应用通知。".into());
         }
-        let notification = windows_toast_document(title, &body)
+        let notification = windows_toast_document(title, &body, &app_id, tauri::is_dev())
             .and_then(|document| {
                 windows::UI::Notifications::ToastNotification::CreateToastNotification(&document)
             })
@@ -254,6 +350,117 @@ mod tests {
         assert!(!permission_request_is_available(
             PermissionState::PromptWithRationale
         ));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_first_setting_waits_for_registration_but_preserves_other_errors() {
+        use windows::{
+            core::{Error, HRESULT},
+            UI::Notifications::NotificationSetting,
+        };
+        let missing = HRESULT(0x80070490u32 as i32);
+        let mut attempts = 0;
+        let result = super::wait_for_windows_notification_setting(
+            || {
+                attempts += 1;
+                if attempts < 3 {
+                    Err(Error::from_hresult(missing))
+                } else {
+                    Ok(NotificationSetting::Enabled)
+                }
+            },
+            std::time::Instant::now() + std::time::Duration::from_secs(1),
+        );
+        assert_eq!(result.unwrap(), NotificationSetting::Enabled);
+        assert_eq!(attempts, 3);
+        for result in [
+            Ok(NotificationSetting::DisabledForApplication),
+            Err(Error::from_hresult(HRESULT(0x80070005u32 as i32))),
+        ] {
+            let mut reads = 0;
+            let actual = super::wait_for_windows_notification_setting(
+                || {
+                    reads += 1;
+                    result.clone()
+                },
+                std::time::Instant::now() + std::time::Duration::from_secs(1),
+            );
+            assert_eq!(reads, 1);
+            match result {
+                Ok(setting) => assert_eq!(actual.unwrap(), setting),
+                Err(error) => assert_eq!(actual.unwrap_err().code(), error.code()),
+            }
+        }
+        let failed = super::wait_for_windows_notification_setting(
+            || Err(Error::from_hresult(missing)),
+            std::time::Instant::now(),
+        );
+        assert_eq!(failed.unwrap_err().code(), missing);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_concurrent_first_permission_reads_keep_identity_ready() {
+        let app_id = format!("dev.ricohmonitor.concurrent-test.{}", std::process::id());
+        std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..8)
+                .map(|_| {
+                    scope.spawn(|| {
+                        let notifier = super::windows_notifier(&app_id, false).unwrap();
+                        super::windows_notification_setting(&notifier, &app_id, false).unwrap()
+                    })
+                })
+                .collect();
+            for worker in workers {
+                assert_eq!(
+                    worker.join().unwrap(),
+                    windows::UI::Notifications::NotificationSetting::Enabled
+                );
+            }
+        });
+        let history = windows::UI::Notifications::ToastNotificationManager::History().unwrap();
+        assert_eq!(
+            history
+                .GetHistoryWithId(&windows::core::HSTRING::from(&app_id))
+                .unwrap()
+                .Size()
+                .unwrap(),
+            0
+        );
+        windows_registry::CURRENT_USER
+            .remove_tree(format!(r"Software\Classes\AppUserModelId\{app_id}"))
+            .unwrap();
+        windows_registry::CURRENT_USER
+            .remove_tree(format!(r"Software\Classes\{app_id}"))
+            .unwrap();
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_notifier_registers_identity_without_a_start_menu_shortcut() {
+        let app_id = format!("dev.ricohmonitor.notification-test.{}", std::process::id());
+        let path = format!(r"Software\Classes\AppUserModelId\{app_id}");
+        let notifier = super::windows_notifier(&app_id, false).unwrap();
+        let result = (|| {
+            let key = windows_registry::CURRENT_USER.open(&path)?;
+            assert_eq!(key.get_string("DisplayName")?, "RichoMonitor");
+            super::windows_permission_from_setting(super::windows_notification_setting(
+                &notifier, &app_id, false,
+            )?)
+            .unwrap();
+            super::windows_permission_from_setting(notifier.Setting()?).unwrap();
+            assert_eq!(
+                windows::UI::Notifications::ToastNotificationManager::History()?
+                    .GetHistoryWithId(&windows::core::HSTRING::from(&app_id))?
+                    .Size()?,
+                0
+            );
+            Ok::<_, windows::core::Error>(())
+        })();
+        let _ = windows_registry::CURRENT_USER.remove_tree(&path);
+        let _ = windows_registry::CURRENT_USER.remove_tree(format!(r"Software\Classes\{app_id}"));
+        result.unwrap();
     }
 
     #[cfg(target_os = "windows")]
@@ -297,13 +504,34 @@ mod tests {
     fn windows_toast_dom_preserves_chinese_and_xml_special_characters() {
         let title = "库存 <GR> & \"提醒\"";
         let body = "中文、换行\n商品 A & B <新品> '可购买' 📷";
-        let document = super::windows_toast_document(title, body).unwrap();
+        let document =
+            super::windows_toast_document(title, body, "dev.ricohmonitor.desktop", false).unwrap();
         let nodes = document
             .GetElementsByTagName(&windows::core::HSTRING::from("text"))
             .unwrap();
         assert_eq!(nodes.Length().unwrap(), 2);
         assert_eq!(nodes.Item(0).unwrap().InnerText().unwrap(), title);
         assert_eq!(nodes.Item(1).unwrap().InnerText().unwrap(), body);
+        let root = document.DocumentElement().unwrap();
+        assert_eq!(
+            root.GetAttribute(&windows::core::HSTRING::from("activationType"))
+                .unwrap(),
+            "protocol"
+        );
+        assert_eq!(
+            root.GetAttribute(&windows::core::HSTRING::from("launch"))
+                .unwrap(),
+            "dev.ricohmonitor.desktop://open"
+        );
+        let debug =
+            super::windows_toast_document(title, body, super::windows_app_id("", true), true)
+                .unwrap();
+        assert!(debug
+            .DocumentElement()
+            .unwrap()
+            .GetAttribute(&windows::core::HSTRING::from("launch"))
+            .unwrap()
+            .is_empty());
     }
 }
 

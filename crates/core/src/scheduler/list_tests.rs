@@ -25,6 +25,57 @@ impl JitterSource for NoJitter {
     }
 }
 
+struct EarlierClock {
+    current: Arc<JumpClock>,
+    elapsed: Duration,
+}
+impl SchedulerClock for EarlierClock {
+    fn monotonic_now(&self) -> Duration {
+        self.current.monotonic_now() + self.elapsed
+    }
+    fn wall_now(&self) -> SystemTime {
+        self.current.wall_now()
+    }
+    fn sleep_until(&self, deadline: Duration) -> ClockFuture<'_> {
+        self.current
+            .sleep_until(deadline.saturating_sub(self.elapsed))
+    }
+}
+
+#[tokio::test]
+async fn recreated_scheduler_keeps_the_shared_gate_clock_for_schedule_deadlines() {
+    for mode in [
+        MonitoringMode::ListedProducts,
+        MonitoringMode::ProductDetail,
+    ] {
+        // App 已运行四小时，此时离北京时间计划结束仍有半小时。
+        let current = JumpClock::at(1_704_067_200 + 2 * 3600 + 30 * 60);
+        let clock: Arc<dyn SchedulerClock> = Arc::new(EarlierClock {
+            current: current.clone(),
+            elapsed: Duration::from_secs(4 * 3600),
+        });
+        let mut config = MonitorConfig::default();
+        config.monitoring_mode = mode;
+        config.schedule.start_minute = 10 * 60;
+        config.schedule.end_minute = 11 * 60;
+        let client = Pages::new(vec![Ok(vec![detail(65)]), Ok(vec![])]);
+        let gate = Arc::new(RequestGate::new(
+            &config.requests,
+            config.scan.interval,
+            clock,
+        ));
+        gate.set_monitor_schedule(&config.schedule);
+        let scheduler = Scheduler::new_with_gate(config, client, Arc::new(NoJitter), gate).unwrap();
+        let mut monitor = scheduler.start([LineId::new(65, "direct")]).unwrap();
+        let event = tokio::time::timeout(Duration::from_secs(2), monitor.recv()).await;
+        monitor.shutdown().await;
+        assert!(
+            event.unwrap().unwrap().result.is_ok(),
+            "计划内的首次检查应成功，不能提前判定窗口结束"
+        );
+    }
+}
+
 // 墙上时间可独立跳变，单调时钟仍按真实时间推进，模拟校时和唤醒。
 struct JumpClock {
     monotonic: TokioClock,
@@ -226,6 +277,18 @@ async fn read(client: Arc<Pages>) -> Result<BTreeMap<u64, ProductDetail>, RicohA
         &mut receiver,
     )
     .await
+    .map(|products| products.expect("测试完整列表应完成"))
+}
+
+#[tokio::test]
+async fn list_admission_at_schedule_end_does_not_report_transport_failure() {
+    let client = Pages::new(vec![Ok(vec![])]);
+    let scheduler = scheduler(client.clone(), Arc::new(FastClock(AtomicU64::new(0))));
+    let (_control, mut receiver) = ControlToken::new();
+    let result = read_list("direct", &scheduler, Duration::ZERO, &mut receiver).await;
+    assert!(result.is_ok(), "计划自然结束不应伪装成接口失败");
+    assert!(result.unwrap().is_none(), "计划截止后不采用部分列表");
+    assert_eq!(client.calls.load(Ordering::Relaxed), 0);
 }
 
 #[tokio::test]
@@ -327,6 +390,7 @@ async fn ten_thousand_local_rounds_have_constant_collection_size() {
             )
             .await
             .unwrap()
+            .expect("完整轮次应包含列表")
             .len(),
             20
         );

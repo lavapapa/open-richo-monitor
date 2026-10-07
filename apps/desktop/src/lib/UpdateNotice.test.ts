@@ -29,7 +29,7 @@ it("设置页通过展开项显示完整更新说明，成功检查显示最新�
   await fireEvent.click(screen.getByText("更新内容"));
   expect(screen.getByText((_, element) => element?.tagName === "PRE" && element.textContent === notes)).toBeTruthy();
   await view.rerender({ mode: "settings", checked: true, status: status(), onCheck: vi.fn(), onInstall: vi.fn() });
-  expect(screen.getByText("当前已是最新版本。")).toBeTruthy();
+  expect(screen.getByText("暂未发现更新。")).toBeTruthy();
 });
 
 it("尚未检查和网页预览显示自动检查说明", () => {

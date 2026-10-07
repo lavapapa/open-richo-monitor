@@ -32,11 +32,14 @@ pub struct ChannelBinding {
     pub id: String,
     pub provider: String,
     pub status: String,
+    pub connection_status: Option<String>,
     pub qr_url: Option<String>,
     #[serde(default)]
     pub targets: Vec<NotificationTarget>,
     pub message: Option<String>,
     pub bot_name: Option<String>,
+    pub bot_url: Option<String>,
+    pub app_name: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -57,6 +60,9 @@ pub struct SendResult {
 }
 
 impl SendResult {
+    pub(crate) fn deferred(message: impl Into<String>) -> Self {
+        Self { outcome: "deferred".into(), message: message.into(), retryable: false }
+    }
     pub fn failed(message: impl Into<String>) -> Self {
         Self {
             outcome: "failed".into(),
@@ -77,7 +83,9 @@ struct Process {
     child: Child,
     stdin: Option<ChildStdin>,
     reader: tokio::task::JoinHandle<()>,
+    health: tokio::task::JoinHandle<()>,
     stdout_closed: Arc<AtomicBool>,
+    started_at: Instant,
 }
 
 type Pending = Arc<Mutex<BTreeMap<u64, oneshot::Sender<Result<Value, String>>>>>;
@@ -126,6 +134,12 @@ impl NotificationRuntime {
         self.accounts.lock().unwrap().get(id).cloned()
     }
 
+    pub fn ready_account_ids(&self) -> Vec<String> {
+        self.accounts.lock().unwrap().iter()
+            .filter(|(_, account)| account.status == "ready")
+            .map(|(id, _)| id.clone()).collect()
+    }
+
     #[cfg(test)]
     pub async fn is_running(&self) -> bool {
         self.state.lock().await.process.is_some()
@@ -150,6 +164,27 @@ impl NotificationRuntime {
 
     pub fn take_credential_updates(&self) -> BTreeMap<String, Value> {
         std::mem::take(&mut *self.credential_updates.lock().unwrap())
+    }
+
+    pub async fn is_recovering(&self) -> bool {
+        let state = self.state.lock().await;
+        !state.stopped && !self.closing.load(Ordering::Relaxed) && state.failures < 3 && state.retry_at.is_some()
+    }
+
+    pub async fn quiesce_account(&self, account_id: &str) -> Result<(), String> {
+        let mut state = self.state.lock().await;
+        if let Some(mut configuration) = state.configuration.clone() {
+            if let Some(accounts) = configuration["accounts"].as_array_mut() {
+                accounts.retain(|account| account["id"].as_str() != Some(account_id));
+            }
+            if state.process.is_some() {
+                self.exchange(&mut state, "configure", configuration.clone()).await?;
+            }
+            state.configuration = Some(configuration);
+        }
+        self.accounts.lock().unwrap().remove(account_id);
+        self.credential_updates.lock().unwrap().remove(account_id);
+        Ok(())
     }
 
     pub fn account_generation(&self, account_id: &str) -> u64 {
@@ -179,6 +214,9 @@ impl NotificationRuntime {
                 .map_err(|_| "无法检查通知服务进程")?
                 .is_some();
             if !exited && !process.stdout_closed.load(Ordering::Acquire) {
+                if process.started_at.elapsed() >= Duration::from_secs(60) {
+                    state.failures = 0;
+                }
                 return Ok(());
             }
             if !exited {
@@ -186,6 +224,10 @@ impl NotificationRuntime {
                 let _ = process.child.wait().await;
             }
             process.reader.abort();
+            process.health.abort();
+            if process.started_at.elapsed() >= Duration::from_secs(60) {
+                state.failures = 0;
+            }
             state.process = None;
             state.failures += 1;
             state.retry_at = Some(Instant::now() + Duration::from_secs(2));
@@ -268,9 +310,25 @@ impl NotificationRuntime {
             }
             status_changed.store(true, Ordering::Relaxed);
             for binding in bindings.lock().unwrap().values_mut() {
-                if matches!(binding["status"].as_str(), Some("waiting" | "scanned")) {
+                if matches!(
+                    binding["status"].as_str(),
+                    Some("waiting" | "scanned" | "needs_verification")
+                ) {
                     binding["status"] = json!("failed");
                     binding["message"] = json!("通知服务连接中断，请重新开始绑定");
+                }
+            }
+        });
+        let monitor = self.clone();
+        let monitor_closed = stdout_closed.clone();
+        let health = tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_secs(5)) => {},
+                    _ = monitor.shutdown_signal.notified() => break,
+                }
+                if monitor.closing.load(Ordering::Relaxed) || monitor_closed.load(Ordering::Acquire) || !monitor.check_health(&monitor_closed).await {
+                    break;
                 }
             }
         });
@@ -278,13 +336,36 @@ impl NotificationRuntime {
             child,
             stdin: Some(stdin),
             reader,
+            health,
             stdout_closed,
+            started_at: Instant::now(),
         });
         // 子进程重启后仅恢复账户连接；已发出的消息从不重放。
         if let Some(config) = state.configuration.clone() {
             self.exchange(state, "configure", config).await?;
         }
         Ok(())
+    }
+
+    async fn check_health(&self, closed: &Arc<AtomicBool>) -> bool {
+        let reply = {
+            let mut state = self.state.lock().await;
+            if self.closing.load(Ordering::Relaxed) || !state.process.as_ref().is_some_and(|process| Arc::ptr_eq(&process.stdout_closed, closed)) {
+                return false;
+            }
+            self.submit(&mut state, "status", json!({})).await
+        };
+        if let Ok((id, receiver)) = reply {
+            let result = tokio::time::timeout(Duration::from_secs(3), self.receive_reply(id, receiver)).await;
+            self.pending.lock().unwrap().remove(&id);
+            if matches!(result, Ok(Ok(_))) { return true; }
+        }
+        closed.store(true, Ordering::Release);
+        for (_, sender) in std::mem::take(&mut *self.pending.lock().unwrap()) {
+            let _ = sender.send(Err("通知服务连接中断".into()));
+        }
+        self.mark_disconnected(false);
+        false
     }
 
     fn mark_disconnected(&self, failed: bool) {
@@ -383,7 +464,7 @@ impl NotificationRuntime {
             || self.bindings.lock().unwrap().values().any(|b| {
                 matches!(
                     b["status"].as_str(),
-                    Some("waiting" | "scanned" | "complete")
+                    Some("waiting" | "scanned" | "needs_verification" | "complete")
                 )
             });
         if !needed {
@@ -466,6 +547,9 @@ impl NotificationRuntime {
         }
         let mut state = self.state.lock().await;
         if let Err(message) = self.start(&mut state).await {
+            if !state.stopped && !self.closing.load(Ordering::Relaxed) && state.failures < 3 && state.retry_at.is_some() {
+                return SendResult::deferred(message);
+            }
             return SendResult::failed(message);
         }
         match can_send() {
@@ -496,7 +580,7 @@ impl NotificationRuntime {
             Ok(value) => serde_json::from_value::<SendResult>(value)
                 .ok()
                 .filter(|result| {
-                    matches!(result.outcome.as_str(), "accepted" | "failed" | "unknown")
+                    matches!(result.outcome.as_str(), "accepted" | "failed" | "unknown" | "deferred")
                 })
                 .unwrap_or_else(SendResult::unknown),
             Err(message) if message == "通知服务无法完成请求，请检查账户授权与连接状态" => {
@@ -520,6 +604,7 @@ impl NotificationRuntime {
             let _ = process.child.wait().await;
         }
         process.reader.abort();
+        process.health.abort();
         let _ = process.reader.await;
         for status in self.accounts.lock().unwrap().values_mut() {
             status.status = "stopped".into();
@@ -619,7 +704,7 @@ fn receive_event(
 pub(crate) fn merge_credentials(current: &mut Value, update: &Value) {
     if let (Some(current), Some(update)) = (current.as_object_mut(), update.as_object()) {
         for (key, value) in update {
-            if value.is_object() {
+            if value.is_object() && !matches!(key.as_str(), "contextTokens" | "contextMetadata") {
                 merge_credentials(
                     current.entry(key.clone()).or_insert_with(|| json!({})),
                     value,
@@ -645,6 +730,71 @@ mod tests {
 
     fn configuration(credentials: Value) -> Value {
         json!({"accounts":[{"id":"a","provider":"feishu","credentials":credentials,"targets":[{"id":"chat-a","kind":"chat","label":"A"}],"enabled":true}],"network":"direct"})
+    }
+
+    #[tokio::test]
+    async fn stable_runtime_does_not_accumulate_old_crashes() {
+        let runtime = fixture();
+        runtime.request("status", json!({})).await.unwrap();
+        {
+            let mut state = runtime.state.lock().await;
+            state.failures = 2;
+            state.process.as_mut().unwrap().started_at = Instant::now() - Duration::from_secs(61);
+        }
+        runtime.request("status", json!({})).await.unwrap();
+        assert_eq!(runtime.state.lock().await.failures, 0);
+        runtime.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn alive_but_unresponsive_runtime_is_reaped_and_restored() {
+        let runtime = fixture();
+        runtime.configure(configuration(json!({"ignoreStatus":true})), false).await.unwrap();
+        let (pid, closed) = {
+            let state = runtime.state.lock().await;
+            let process = state.process.as_ref().unwrap();
+            (process.child.id(), process.stdout_closed.clone())
+        };
+        assert!(!runtime.check_health(&closed).await);
+        assert!(closed.load(Ordering::Acquire));
+        assert!(runtime.request("fixture_target_name", json!({"accountId":"a","target":{"id":"chat-a","kind":"chat"}})).await.is_err());
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        runtime.request("fixture_target_name", json!({"accountId":"a","target":{"id":"chat-a","kind":"chat"}})).await.unwrap();
+        assert_ne!(runtime.state.lock().await.process.as_ref().unwrap().child.id(), pid);
+        runtime.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn stable_process_crashing_before_next_request_starts_a_new_crash_streak() {
+        let runtime = fixture();
+        runtime.configure(configuration(json!({})), false).await.unwrap();
+        {
+            let mut state = runtime.state.lock().await;
+            state.failures = 2;
+            let process = state.process.as_mut().unwrap();
+            process.started_at = Instant::now() - Duration::from_secs(61);
+            process.child.kill().await.unwrap();
+            process.child.wait().await.unwrap();
+        }
+        assert!(runtime.request("status", json!({})).await.is_err());
+        assert_eq!(runtime.state.lock().await.failures, 1);
+        runtime.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn child_exiting_before_send_is_deferred_until_runtime_recovers() {
+        let runtime = fixture();
+        runtime.configure(configuration(json!({})), false).await.unwrap();
+        {
+            let mut state = runtime.state.lock().await;
+            let process = state.process.as_mut().unwrap();
+            process.child.kill().await.unwrap();
+            process.child.wait().await.unwrap();
+        }
+        let target = NotificationTarget { id: "chat-a".into(), kind: "chat".into(), label: "Fixture".into() };
+        assert_eq!(runtime.send("a", &target, "fixture").await.outcome, "deferred");
+        assert!(runtime.is_recovering().await);
+        runtime.shutdown().await;
     }
 
     #[tokio::test]
@@ -863,13 +1013,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rpc_errors_do_not_expose_credentials_and_context_updates_preserve_all_targets() {
+    async fn rpc_errors_do_not_expose_credentials_and_context_snapshots_remove_evicted_targets() {
         let runtime = fixture();
         let message = runtime.request("reject", json!({})).await.unwrap_err();
         assert!(!message.contains("private-bound-secret"));
         let mut credentials = json!({"botToken":"private","contextTokens":{"a":"old"}});
         merge_credentials(&mut credentials, &json!({"contextTokens":{"b":"new"}}));
-        assert_eq!(credentials["contextTokens"], json!({"a":"old","b":"new"}));
+        assert_eq!(credentials["contextTokens"], json!({"b":"new"}));
         runtime.shutdown().await;
     }
 

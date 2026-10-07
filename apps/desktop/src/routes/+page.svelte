@@ -73,7 +73,7 @@
     { id: "settings", label: "其他设置", icon: Settings2 },
   ] as const;
   const events: { id: ChannelEvent; label: string }[] = [
-    { id: "stock_available", label: "商品上架或库存增加" },
+    { id: "stock_available", label: "商品上架或补货" },
     { id: "monitoring_failed", label: "监控异常" },
     { id: "recovered", label: "监控恢复" },
   ];
@@ -720,7 +720,7 @@
   }
 
   function connectionLabel(status?: string) {
-    return status === "ready" ? "已连接" : status === "auth_required" ? "需要重新授权" : status === "connecting" ? "连接中" : status === "reconnecting" ? "重新连接中" : status === "failed" ? "连接失败" : status === "stopped" ? "连接已停止" : "";
+    return status === "ready" ? "已连接" : status === "auth_required" ? "需要重新授权" : status === "connection_conflict" ? "连接被其他实例接管" : status === "connecting" ? "连接中" : status === "reconnecting" ? "重新连接中" : status === "failed" ? "连接失败" : status === "stopped" ? "连接已停止" : status === "awaiting_message" ? "等待首条消息" : "";
   }
 
   async function saveChannel() {
@@ -886,7 +886,21 @@
   }
 
   async function checkNotificationPermission(request = false) {
-    await run(() => request ? desktopApi.requestNotificationPermission() : desktopApi.refreshNotificationPermission());
+    if (request) {
+      await run(() => desktopApi.requestNotificationPermission());
+      return;
+    }
+    beginOperation();
+    notice = null;
+    try {
+      const platform = await desktopApi.refreshNotificationPermission();
+      if (snapshot) adopt({ ...snapshot, platform });
+    } catch {
+      // 检查结果以最终读取的权限状态为准，持续错误由平台状态区域展示。
+      await refresh();
+    } finally {
+      endOperation();
+    }
   }
 
   async function enableSetupNotifications() {
@@ -1003,6 +1017,7 @@
   <main class:status-page={page === "status"} bind:this={mainElement}>
     {#if page !== "settings"}<UpdateNotice mode="banner" status={updateStatus} checked={updateChecked} onCheck={checkUpdates} onInstall={installUpdate} />{/if}
     {#if snapshot?.systemNotificationsEnabled && snapshot.platform?.notificationPermission === "denied"}<p class="notice error" role="alert">系统通知权限已关闭。请在系统设置中开启本应用通知，返回后点击“检查权限”。{#if page !== "notifications"}<button on:click={() => navigate("notifications")}>通知设置</button>{/if}</p>{/if}
+    {#if snapshot?.systemNotificationsEnabled && snapshot.platform?.notificationPermissionError && notice?.text !== snapshot.platform.notificationPermissionError}<p class="notice error" role="alert">{snapshot.platform.notificationPermissionError}{#if page !== "notifications"}<button on:click={() => navigate("notifications")}>通知设置</button>{/if}</p>{/if}
     {#if error}<p class="notice error" role="alert">{error} <button on:click={refresh}>重试</button></p>{/if}
     {#if notice}<p class:success={notice.kind === "success"} class:error={notice.kind === "error"} class="notice toast" role={notice.kind === "error" ? "alert" : "status"}>{notice.text}<button aria-label="关闭" on:click={() => notice = null}>×</button></p>{/if}
     {#if loading && !snapshot}<p class="loading-state">正在读取状态…</p>
@@ -1058,7 +1073,7 @@
           <div class="system-notification-row">
             <h2>系统通知</h2>
             <label class="switch"><span>启用</span><input aria-label="启用系统通知" type="checkbox" disabled={pendingToggles.has("system-notifications")} checked={snapshot?.systemNotificationsEnabled ?? false} on:change={(event) => saveToggle("system-notifications", event.currentTarget, snapshot?.systemNotificationsEnabled ?? false, (enabled) => desktopApi.setSystemNotificationsEnabled(enabled))} /></label>
-            <small>权限：{snapshot?.platform?.notificationPermission === "granted" ? "已允许" : snapshot?.platform?.notificationPermission === "denied" ? "已关闭" : snapshot?.platform?.notificationPermission === "prompt" ? "首次发送时询问" : snapshot?.platform?.notificationPermission === "prompt_with_rationale" ? "需要授权" : "尚未确认"}</small>
+            <small>权限：{snapshot?.platform?.notificationPermission === "granted" ? "已允许" : snapshot?.platform?.notificationPermission === "denied" ? "已关闭" : snapshot?.platform?.notificationPermission === "unavailable" ? "暂时无法读取" : snapshot?.platform?.notificationPermission === "prompt" ? "首次发送时询问" : snapshot?.platform?.notificationPermission === "prompt_with_rationale" ? "需要授权" : "尚未确认"}</small>
             {#if snapshot?.platform?.notificationPermission === "prompt" || snapshot?.platform?.notificationPermission === "prompt_with_rationale"}<button class="secondary" disabled={busy} on:click={() => checkNotificationPermission(true)}>申请权限</button>{/if}
             <button class="secondary" disabled={busy} on:click={() => checkNotificationPermission()}>检查权限</button>
             <button class="secondary" disabled={busy} on:click={sendSystemTest}>发送测试</button>
@@ -1067,7 +1082,7 @@
           {#if snapshot?.systemNotificationDelivery}
             <p class="muted">最近系统通知：{snapshot.systemNotificationDelivery.outcome === "accepted" ? "已提交" : snapshot.systemNotificationDelivery.outcome === "unknown" ? "尚未确认送达" : "发送失败"} · {snapshot.systemNotificationDelivery.message}</p>
           {/if}
-          <div class="prominent-test-row"><p class="quiet">突出提醒会在商品上架、恢复有货或库存增加时覆盖屏幕，可通过商品旁的图标开启。</p><button class="secondary" disabled={busy || !productRows.length} on:click={testProminentAlert}>测试突出提醒</button></div>
+          <div class="prominent-test-row"><p class="quiet">突出提醒会在商品上架或补货时覆盖屏幕，可通过商品旁的图标开启。</p><button class="secondary" disabled={busy || !productRows.length} on:click={testProminentAlert}>测试突出提醒</button></div>
         </section>
         <section class="group">
           <div class="section-heading channel-heading"><h2>通知渠道</h2><ChannelAdd providers={snapshot?.providers ?? []} {busy} onAdd={(id) => editChannel(null, id)} /></div>

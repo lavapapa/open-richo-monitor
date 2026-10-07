@@ -1,4 +1,5 @@
 use std::{
+    error::Error as _,
     sync::{atomic::Ordering, Arc},
     time::{Duration, Instant},
 };
@@ -63,6 +64,38 @@ fn latest_version<'a>(versions: impl Iterator<Item = &'a str>) -> Option<semver:
         .max()
 }
 
+fn require_checked_source(checked: bool, errors: &[String]) -> Result<(), String> {
+    if checked {
+        return Ok(());
+    }
+    Err(if errors.is_empty() {
+        "未配置更新来源。".into()
+    } else {
+        errors.join("；")
+    })
+}
+
+fn source_failure(endpoint: &url::Url, error: &tauri_plugin_updater::Error) -> String {
+    let source = match endpoint.host_str() {
+        Some("gitee.com") => "Gitee",
+        Some("github.com") => "GitHub",
+        Some(host) => host,
+        None => "更新来源",
+    };
+    let reason = match error {
+        tauri_plugin_updater::Error::Reqwest(error) if error.is_timeout() => {
+            "连接超时，请检查系统代理或稍后重试。".into()
+        }
+        tauri_plugin_updater::Error::Reqwest(error) if error.is_connect() => {
+            "连接失败，请检查网络与系统代理。".into()
+        }
+        tauri_plugin_updater::Error::Serialization(_) => "更新信息格式无效，请稍后重试。".into(),
+        tauri_plugin_updater::Error::ReleaseNotFound => "更新来源暂不可用，请稍后重试。".into(),
+        _ => error.to_string(),
+    };
+    format!("{source}：{reason}")
+}
+
 fn updater_builder(app: &tauri::AppHandle) -> tauri_plugin_updater::UpdaterBuilder {
     let builder = app.updater_builder().timeout(Duration::from_secs(30));
     #[cfg(target_os = "windows")]
@@ -94,12 +127,26 @@ async fn check_sources(app: &tauri::AppHandle) -> Result<Vec<Update>, String> {
         let app = app.clone();
         checks.spawn(async move {
             let result = match updater_builder(&app)
-                .endpoints(vec![endpoint])
+                .endpoints(vec![endpoint.clone()])
                 .and_then(|builder| builder.build())
             {
                 Ok(updater) => updater.check().await,
                 Err(error) => Err(error),
             };
+            let result = result.map_err(|error| {
+                let mut detail = error.to_string();
+                let mut cause = error.source();
+                while let Some(reason) = cause {
+                    detail.push_str(&format!("：{reason}"));
+                    cause = reason.source();
+                }
+                let backend = app.state::<Arc<DesktopBackend>>();
+                desktop_backend::write_log(
+                    &backend.data_dir,
+                    &format!("更新来源 {endpoint}：{detail}"),
+                );
+                source_failure(&endpoint, &error)
+            });
             (priority, result)
         });
     }
@@ -118,9 +165,7 @@ async fn check_sources(app: &tauri::AppHandle) -> Result<Vec<Update>, String> {
             Err(error) => errors.push(error.to_string()),
         }
     }
-    if !checked || (releases.is_empty() && !errors.is_empty()) {
-        return Err(format!("更新服务检查未完成：{}", errors.join("；")));
-    }
+    require_checked_source(checked, &errors)?;
     // 镜像可能滞后；两个来源独立检查后，保留最新版本的所有下载对象。
     let latest = latest_version(releases.iter().map(|(_, update)| update.version.as_str()));
     releases.retain(|(_, update)| Some(semver::Version::parse(&update.version).unwrap()) == latest);
@@ -249,6 +294,35 @@ pub fn start_hourly_checks(app: tauri::AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn successful_source_without_update_is_not_failed_by_an_unavailable_mirror() {
+        assert!(require_checked_source(true, &["GitHub：连接超时".into()]).is_ok());
+        assert!(require_checked_source(true, &["Gitee：连接超时".into()]).is_ok());
+        assert!(require_checked_source(true, &[]).is_ok());
+        assert!(require_checked_source(
+            false,
+            &["Gitee：连接超时".into(), "GitHub：连接失败".into()]
+        )
+        .is_err());
+        assert_eq!(
+            require_checked_source(false, &[]).unwrap_err(),
+            "未配置更新来源。"
+        );
+    }
+
+    #[test]
+    fn failed_sources_are_named_and_explain_the_next_action() {
+        let error = tauri_plugin_updater::Error::ReleaseNotFound;
+        for (url, source) in [
+            ("https://gitee.com/example/latest.json", "Gitee"),
+            ("https://github.com/example/latest.json", "GitHub"),
+        ] {
+            let message = source_failure(&url.parse().unwrap(), &error);
+            assert!(message.starts_with(source));
+            assert!(message.contains("稍后重试"));
+        }
+    }
 
     #[test]
     fn mirror_selection_uses_newest_semantic_version() {

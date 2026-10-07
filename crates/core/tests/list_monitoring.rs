@@ -254,7 +254,7 @@ async fn both_modes_deliver_stock_increase_to_prominent_alerts() {
             history
                 .items
                 .iter()
-                .filter(|item| item.detail == "库存增加 3 → 5")
+                .filter(|item| item.detail == "补货 3 → 5")
                 .count(),
             1
         );

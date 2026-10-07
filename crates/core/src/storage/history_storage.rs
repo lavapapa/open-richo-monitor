@@ -161,8 +161,12 @@ fn history_detail(
         if stock != previous_stock {
             changes.push(match (previous_stock, stock) {
                 (Some(before), Some(after)) => format!(
-                    "库存{} {before} → {after}",
-                    if after > before { "增加" } else { "减少" }
+                    "{} {before} → {after}",
+                    if after > before {
+                        "补货"
+                    } else {
+                        "库存减少"
+                    }
                 ),
                 (None, Some(after)) => format!("库存已获取：{after}"),
                 (_, None) => "接口未提供库存".into(),
@@ -210,9 +214,9 @@ mod tests {
         let next = storage
             .query_history(3000, 6000, Some("1"), page.next_cursor, 2)
             .unwrap();
-        assert_eq!(next.items[0].detail, "库存增加 3 → 5");
+        assert_eq!(next.items[0].detail, "补货 3 → 5");
         let all = storage.query_history(0, 6000, None, None, 100).unwrap();
-        assert_eq!(all.items[3].detail, "商品上架 · 库存增加 0 → 3");
+        assert_eq!(all.items[3].detail, "商品上架 · 补货 0 → 3");
         assert_eq!(all.items[4].detail, "检查结果：未上架 · 库存 0");
     }
 

@@ -76,14 +76,8 @@ async fn two_products_and_scan_each_receive_repeated_global_request_slots() {
         first: AtomicUsize::new(0),
         second: AtomicUsize::new(0),
     });
-    let scheduler = Scheduler::new_with_gate(
-        config,
-        client.clone(),
-        clock,
-        Arc::new(NoJitter),
-        gate.clone(),
-    )
-    .unwrap();
+    let scheduler =
+        Scheduler::new_with_gate(config, client.clone(), Arc::new(NoJitter), gate.clone()).unwrap();
     let mut monitor = scheduler
         .start([LineId::new(65, "direct"), LineId::new(66, "direct")])
         .unwrap();

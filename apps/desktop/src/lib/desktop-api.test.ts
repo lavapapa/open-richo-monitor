@@ -195,7 +195,7 @@ describe("浏览器样本配置", () => {
   it("样本消息明确描述上架和库存改变", async () => {
     bridge.isTauri.mockReturnValue(false);
     const page = await desktopApi.queryMessages({ date: null, productId: null, cursor: null, limit: 100 });
-    expect(page.items[0].detail).toBe("商品上架 · 库存增加 0 → 3");
+    expect(page.items[0].detail).toBe("商品上架 · 补货 0 → 3");
     expect(page.items.every((item) => item.detail !== "状态变化")).toBe(true);
     expect(page.items[1].detail).toBe("检查结果：未上架 · 库存 0");
   });
