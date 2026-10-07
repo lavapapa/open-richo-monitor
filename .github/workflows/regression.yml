@@ -65,8 +65,10 @@ jobs:
             node scripts/test-windows-desktop.mjs target/debug/ricoh-monitor-desktop.exe
             if ($LASTEXITCODE -ne 0) { throw 'Windows desktop verification failed' }
           } finally {
-            Get-CimInstance Win32_Process -Filter "ParentProcessId=$($driver.Id)" | ForEach-Object { Stop-Process -Id $_.ProcessId -ErrorAction SilentlyContinue }
-            Stop-Process -Id $driver.Id -ErrorAction SilentlyContinue
+            if (-not $driver.HasExited) {
+              $driver.Kill($true)
+              $driver.WaitForExit()
+            }
           }
       - uses: actions/upload-artifact@v4
         if: always() && runner.os == 'Windows'
