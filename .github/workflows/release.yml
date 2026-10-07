@@ -4,6 +4,12 @@ on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      platform:
+        description: 构建平台（单平台仅生成工件）
+        type: choice
+        default: all
+        options: [all, macos-15, macos-15-intel, windows-2022]
 
 permissions:
   contents: write
@@ -13,7 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-15, macos-15-intel, windows-2022]
+        os: ${{ fromJSON(inputs.platform && inputs.platform != 'all' && format('["{0}"]', inputs.platform) || '["macos-15","macos-15-intel","windows-2022"]') }}
     runs-on: ${{ matrix.os }}
     env:
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -42,6 +48,9 @@ jobs:
           cargo test --locked --manifest-path crates/core/Cargo.toml
           npm run build:notifications --prefix apps/desktop
           cargo test --locked --manifest-path apps/desktop/src-tauri/Cargo.toml
+          cargo clean --profile dev --manifest-path crates/core/Cargo.toml
+          cargo clean --profile dev --manifest-path apps/desktop/src-tauri/Cargo.toml
+          df -h .
           npm run package:macos:dmg --prefix apps/desktop
           node scripts/test-notification-runtime.mjs apps/desktop/src-tauri/target/release/bundle/macos/open-richo-monitor.app/Contents/MacOS/notification-runtime apps/desktop/src-tauri/target/release/bundle/macos/open-richo-monitor.app/Contents/Resources/notification-runtime.mjs
       - name: Windows tests and package
@@ -60,6 +69,7 @@ jobs:
 
   draft:
     needs: build
+    if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

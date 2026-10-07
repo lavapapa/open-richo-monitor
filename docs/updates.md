@@ -20,6 +20,8 @@
 
 在 `apps/desktop/src-tauri/tauri.conf.json` 更新版本，同时同步 desktop 的 Cargo/npm 版本，提交并建立同名 `v版本` 标签。读取 [验收清单](release-checklist.md)，完成相关平台验收；通过 `.github/workflows/release.yml` 构建三个平台并上传到草稿 Release。确认全部安装包、签名与更新清单可用后发布该 Release，并将其设为 latest。更新清单与构件应一次发布，避免指向尚未上传的文件。
 
+手动运行流程时可选择单个平台重建工件；该模式不创建 Release。macOS 测试结束后清理 debug 编译缓存，为正式构建和 DMG 临时卷保留磁盘空间。
+
 更新私钥保存在发布者的受限本地目录与 GitHub Actions 的 `TAURI_SIGNING_PRIVATE_KEY` secret，密码使用 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`；源码中的 updater `pubkey` 用来验证更新。妥善备份私钥，沿用同一密钥签后续版本。更新签名独立于 macOS Developer ID 和 Windows Authenticode；操作系统首次安装限制仍按平台规则处理。
 
 Bun 所含 LGPL 组件的源码资料通过 [SOURCE.txt](../third_party/bun/SOURCE.txt) 获取，安装应用无需下载资料。每次更换其版本时确认资料完整与可达。
