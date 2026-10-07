@@ -5,6 +5,9 @@ on:
     branches: [main, 'codex/**']
 permissions:
   contents: read
+concurrency:
+  group: regression-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   regression:
     strategy:
@@ -15,6 +18,10 @@ jobs:
     timeout-minutes: 45
     env:
       CARGO_BUILD_JOBS: 2
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
       TAURI_CONFIG: '{"identifier":"dev.ricohmonitor.windowsqa","productName":"RichoMonitor Windows QA"}'
     steps:
       - uses: actions/checkout@v4
@@ -55,7 +62,7 @@ jobs:
         run: |
           $driver = Start-Process "$env:USERPROFILE/.cargo/bin/tauri-driver.exe" -ArgumentList "--native-driver", "$PWD/msedgedriver.exe" -PassThru
           try {
-            node scripts/test-windows-desktop.mjs apps/desktop/src-tauri/target/debug/ricoh-monitor-desktop.exe
+            node scripts/test-windows-desktop.mjs target/debug/ricoh-monitor-desktop.exe
             if ($LASTEXITCODE -ne 0) { throw 'Windows desktop verification failed' }
           } finally {
             Get-CimInstance Win32_Process -Filter "ParentProcessId=$($driver.Id)" | ForEach-Object { Stop-Process -Id $_.ProcessId -ErrorAction SilentlyContinue }

@@ -22,6 +22,10 @@ jobs:
         os: ${{ fromJSON(inputs.platform && inputs.platform != 'all' && format('["{0}"]', inputs.platform) || '["macos-15","windows-2022"]') }}
     runs-on: ${{ matrix.os }}
     env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     steps:
@@ -49,10 +53,9 @@ jobs:
           npm run build:notifications --prefix apps/desktop
           cargo test --locked --manifest-path apps/desktop/src-tauri/Cargo.toml
           cargo clean --profile dev --manifest-path crates/core/Cargo.toml
-          cargo clean --profile dev --manifest-path apps/desktop/src-tauri/Cargo.toml
           df -h .
           npm run package:macos:dmg --prefix apps/desktop
-          node scripts/test-notification-runtime.mjs apps/desktop/src-tauri/target/release/bundle/macos/RichoMonitor.app/Contents/MacOS/notification-runtime apps/desktop/src-tauri/target/release/bundle/macos/RichoMonitor.app/Contents/Resources/notification-runtime.mjs
+          node scripts/test-notification-runtime.mjs target/release/bundle/macos/RichoMonitor.app/Contents/MacOS/notification-runtime target/release/bundle/macos/RichoMonitor.app/Contents/Resources/notification-runtime.mjs
       - name: Windows tests and package
         if: runner.os == 'Windows'
         shell: pwsh
