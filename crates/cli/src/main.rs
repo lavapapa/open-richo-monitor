@@ -559,7 +559,6 @@ mod tests {
         let mut config = storage.monitor_config().unwrap();
         config.monitoring_mode = ricoh_monitor_core::config::MonitoringMode::ProductDetail;
         config.scan.interval = std::time::Duration::from_millis(10);
-        config.requests.global_requests_per_second = 100.0;
         storage.save_monitor_config(&config).unwrap();
         drop(storage);
         let client = Arc::new(FixtureClient(std::sync::atomic::AtomicUsize::new(0)));
@@ -593,7 +592,6 @@ mod tests {
         let mut config = storage.monitor_config().unwrap();
         config.monitoring_mode = ricoh_monitor_core::config::MonitoringMode::ProductDetail;
         config.scan.interval = std::time::Duration::from_millis(10);
-        config.requests.global_requests_per_second = 100.0;
         storage.save_monitor_config(&config).unwrap();
         drop(storage);
         let client = Arc::new(FixtureClient(std::sync::atomic::AtomicUsize::new(0)));

@@ -18,16 +18,18 @@ const bridge = vi.hoisted(() => ({
   eventHandler: null as null | ((event: { payload: DesktopSnapshot }) => void),
   updateHandler: null as null | ((event: { payload: UpdateStatus }) => void),
   updateUnlisten: vi.fn(),
+  purchaseHandler: null as null | (() => void),
   installUpdateCount: 0,
   installUpdatePromise: null as null | Promise<void>,
 }));
 
 vi.mock("@tauri-apps/api/app", () => ({ getVersion: vi.fn(async () => "0.1.0") }));
 
-vi.mock("@tauri-apps/api/core", () => ({ invoke: (name: string, args?: unknown) => name === "refresh_catalog_metadata" ? bridge.refreshCatalog() : name === "check_for_updates" ? Promise.resolve({ phase: "idle", version: null, notes: null, downloaded: 0, total: null, error: null }) : name === "install_update" ? (bridge.installUpdateCount++, bridge.installUpdatePromise ?? Promise.resolve()) : bridge.invoke(name, args), isTauri: bridge.isTauri, convertFileSrc: (path: string) => `asset://localhost/${path}` }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: (name: string, args?: unknown) => name === "refresh_catalog_metadata" ? bridge.refreshCatalog() : name === "check_for_updates" ? Promise.resolve({ phase: "idle", autoInstall: true, version: null, notes: null, downloaded: 0, total: null, error: null }) : name === "install_update" ? (bridge.installUpdateCount++, bridge.installUpdatePromise ?? Promise.resolve()) : bridge.invoke(name, args), isTauri: bridge.isTauri, convertFileSrc: (path: string) => `asset://localhost/${path}` }));
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(async (name: string, handler: (event: { payload: any }) => void) => {
     if (name === "desktop-state-changed") bridge.eventHandler = handler;
+    if (name === "purchase-completed") bridge.purchaseHandler = handler as () => void;
     if (name === "desktop-update") { bridge.updateHandler = handler; bridge.updateUnlisten = vi.fn(); return bridge.updateUnlisten; }
     return vi.fn();
   }),
@@ -50,7 +52,7 @@ function makeSnapshot(overrides: Partial<DesktopSnapshot> = {}): DesktopSnapshot
       monitoringMode: "listed_products",
       schedule: { days: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"], start: "09:00", end: "19:00" },
       rate: { intervalMinMs: 1000, intervalMaxMs: 2000, failuresBeforeBackoff: 3, failureBackoffSeconds: 20 },
-      useSystemProxy: true, useProxyPool: false, failureAlertAfterMinutes: 10,
+      useSystemProxy: true, notificationUseSystemProxy: true, useProxyPool: false, failureAlertAfterMinutes: 10,
     },
     products: [], catalog: [], channels: [], providers: [], proxies: [], scan: null,
     platform: {
@@ -102,7 +104,7 @@ function deferred<T>() {
 function useOnboardingBridge() {
   bridge.invoke.mockImplementation(async (name: string, args?: Record<string, any>) => {
     if (name === "get_desktop_snapshot") return structuredClone(current);
-    if (name === "check_for_updates") return { phase: "idle", version: null, notes: null, downloaded: 0, total: null, error: null };
+    if (name === "check_for_updates") return { phase: "idle", autoInstall: true, version: null, notes: null, downloaded: 0, total: null, error: null };
     if (name === "install_update") return undefined;
     if (name === "query_messages") return messagePage(args!.query!);
     if (name === "set_onboarding_products") {
@@ -156,6 +158,7 @@ beforeEach(() => {
   current = makeSnapshot();
   bridge.eventHandler = null;
   bridge.updateHandler = null;
+  bridge.purchaseHandler = null;
   bridge.installUpdateCount = 0;
   bridge.installUpdatePromise = null;
   bridge.isTauri.mockReturnValue(true);
@@ -425,6 +428,13 @@ describe("桌面主流程", () => {
     await fireEvent.click(screen.getByRole("button", { name: "监控产品" }));
     expect(bridge.refreshCatalog.mock.calls.length).toBe(firstVisit + 1);
   });
+  it("管理商品位于商品面板内，不另占分隔条下方的布局行", async () => {
+    render(Page);
+    await screen.findByRole("button", { name: "开始监控" });
+    const products = screen.getByRole("region", { name: "监控商品" });
+    const management = screen.getByRole("button", { name: "管理商品" });
+    expect(products.contains(management)).toBe(true);
+  });
   it("最近消息可折叠和恢复，分隔条支持键盘调宽并保存偏好", async () => {
     render(Page);
     await screen.findByRole("button", { name: "开始监控" });
@@ -553,7 +563,7 @@ describe("桌面主流程", () => {
     await screen.findByRole("button", { name: "开始监控" });
     await fireEvent.click(screen.getByRole("button", { name: "速率" }));
     expect(screen.queryByRole("combobox", { name: "监控方案" })).toBeNull();
-    expect(screen.getByText(/每轮列表检查间隔/)).toBeTruthy();
+    expect(screen.getByText(/每轮列表检查完成后/)).toBeTruthy();
     await fireEvent.click(screen.getByRole("button", { name: "其他设置" }));
     const mode = screen.getByRole("radio", { name: "全站上架列表（推荐）" }) as HTMLInputElement;
     expect(mode.checked).toBe(true);
@@ -564,7 +574,7 @@ describe("桌面主流程", () => {
     await waitFor(() => expect(current.config?.monitoringMode).toBe("product_detail"));
     expect(bridge.invoke).toHaveBeenCalledWith("save_monitoring_config", { config: expect.objectContaining({ monitoringMode: "product_detail" }) });
     await fireEvent.click(screen.getByRole("button", { name: "速率" }));
-    expect(screen.getByText(/每个监控商品请求间隔/)).toBeTruthy();
+    expect(screen.getByText(/每个监控商品请求完成后/)).toBeTruthy();
     current.config!.monitoringMode = "listed_products";
     await fireEvent.click(screen.getByRole("button", { name: "其他设置" }));
     await fireEvent.click(screen.getByRole("button", { name: "导入配置…" }));
@@ -1207,14 +1217,14 @@ describe("桌面主流程", () => {
   it("主页更新事件同步到设置页，安装防重并在退出时释放订阅", async () => {
     render(Page);
     await waitFor(() => expect(bridge.updateHandler).toBeTruthy());
-    const available: UpdateStatus = { phase: "available", version: "0.2.0", notes: "修复连接", downloaded: 0, total: null, error: null };
+    const available: UpdateStatus = { phase: "available", autoInstall: true, version: "0.2.0", notes: "修复连接", downloaded: 0, total: null, error: null };
     bridge.updateHandler!({ payload: available });
     await waitFor(() => expect(screen.getByText("发现新版本 0.2.0")).toBeTruthy());
     expect(screen.queryByRole("alert", { name: /更新/ })).toBeNull();
 
     await fireEvent.click(screen.getByRole("button", { name: "其他设置" }));
     expect(screen.getAllByText(/发现新版本 0\.2\.0/).length).toBeGreaterThan(0);
-    const install = screen.getAllByRole("button", { name: "下载并重启" })[0];
+    const install = screen.getAllByRole("button", { name: "监控空闲时更新" })[0];
     await fireEvent.click(install);
     await fireEvent.click(install);
     expect(bridge.installUpdateCount).toBe(1);
@@ -1226,13 +1236,13 @@ describe("桌面主流程", () => {
   it("安装失败保留可重试版本并直接显示原生错误", async () => {
     render(Page);
     await waitFor(() => expect(bridge.updateHandler).toBeTruthy());
-    bridge.updateHandler!({ payload: { phase: "available", version: "0.2.0", notes: null, downloaded: 0, total: null, error: null } });
+    bridge.updateHandler!({ payload: { phase: "available", autoInstall: true, version: "0.2.0", notes: null, downloaded: 0, total: null, error: null } });
     bridge.installUpdatePromise = Promise.reject(new Error("更新失败：签名校验失败"));
     await fireEvent.click(screen.getByRole("button", { name: "其他设置" }));
-    await fireEvent.click(screen.getAllByRole("button", { name: "下载并重启" })[0]);
+    await fireEvent.click(screen.getAllByRole("button", { name: "监控空闲时更新" })[0]);
     expect((await screen.findByRole("alert")).textContent).toBe("更新失败：签名校验失败");
     expect(screen.getByText(/发现新版本 0\.2\.0/)).toBeTruthy();
-    expect(screen.getAllByRole("button", { name: "下载并重启" })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "监控空闲时更新" })).toHaveLength(1);
   });
 
   it("安装期间到达较新原生事件时，失败回调不覆盖该状态", async () => {
@@ -1240,13 +1250,52 @@ describe("桌面主流程", () => {
     bridge.installUpdatePromise = pendingInstall.promise;
     render(Page);
     await waitFor(() => expect(bridge.updateHandler).toBeTruthy());
-    bridge.updateHandler!({ payload: { phase: "available", version: "0.2.0", notes: null, downloaded: 0, total: null, error: null } });
+    bridge.updateHandler!({ payload: { phase: "available", autoInstall: true, version: "0.2.0", notes: null, downloaded: 0, total: null, error: null } });
     await fireEvent.click(screen.getByRole("button", { name: "其他设置" }));
-    await fireEvent.click(screen.getAllByRole("button", { name: "下载并重启" })[0]);
-    bridge.updateHandler!({ payload: { phase: "downloading", version: "0.2.0", notes: null, downloaded: 512, total: 1024, error: null } });
+    await fireEvent.click(screen.getAllByRole("button", { name: "监控空闲时更新" })[0]);
+    bridge.updateHandler!({ payload: { phase: "downloading", autoInstall: true, version: "0.2.0", notes: null, downloaded: 512, total: 1024, error: null } });
     pendingInstall.reject(new Error("旧请求失败"));
     await screen.findByText(/正在下载更新：50%/);
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("自动更新设置的旧返回不覆盖更晚的下载状态", async () => {
+    const saved = deferred<UpdateStatus>();
+    const idle: UpdateStatus = { phase: "idle", autoInstall: true, version: null, notes: null, downloaded: 0, total: null, error: null };
+    const previous = bridge.invoke.getMockImplementation()!;
+    bridge.invoke.mockImplementation((name, args) => name === "set_auto_install_updates" ? saved.promise : previous(name, args));
+    render(Page);
+    await fireEvent.click(screen.getByRole("button", { name: "其他设置" }));
+    await fireEvent.click(await screen.findByRole("checkbox", { name: "监控空闲时自动更新" }));
+    bridge.updateHandler!({ payload: { ...idle, phase: "downloading", autoInstall: false, version: "0.2.0", downloaded: 512, total: 1024 } });
+    saved.resolve({ ...idle, autoInstall: false });
+    await screen.findByText(/正在下载更新：50%/);
+    expect((screen.getByRole("checkbox", { name: "监控空闲时自动更新" }) as HTMLInputElement).checked).toBe(false);
+  });
+
+  it("购买完成事件打开一次评价，跳过后后续事件不重复弹窗", async () => {
+    render(Page);
+    await waitFor(() => expect(bridge.purchaseHandler).toBeTypeOf("function"));
+    bridge.purchaseHandler!();
+    await screen.findByRole("dialog", { name: "恭喜买到心仪的相机！" });
+    await fireEvent.click(screen.getByRole("button", { name: "跳过" }));
+    bridge.purchaseHandler!();
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "恭喜买到心仪的相机！" })).toBeNull());
+  });
+
+  it("设置页直接填写反馈，关闭不会消费购买后的评价", async () => {
+    current.platform!.feedbackUrl = "https://github.com/lavapapa/open-richo-monitor/issues/new";
+    render(Page);
+    await screen.findByRole("button", { name: "开始监控" });
+    await fireEvent.click(screen.getByRole("button", { name: "其他设置" }));
+    await fireEvent.click(screen.getByRole("button", { name: "反馈" }));
+    await screen.findByRole("dialog", { name: "告诉我你的意见" });
+    expect(screen.getByRole("textbox", { name: "意见" })).toBeTruthy();
+    bridge.purchaseHandler!();
+    expect(screen.queryByRole("dialog", { name: "恭喜买到心仪的相机！" })).toBeNull();
+    await fireEvent.click(screen.getByRole("button", { name: "跳过" }));
+    expect(localStorage.getItem("rm.purchase.reviewed")).toBeNull();
+    await screen.findByRole("dialog", { name: "恭喜买到心仪的相机！" });
   });
 
   it("大检查次数完整保留、无 info 图标，铃铛在上架状态前", async () => {
@@ -1533,6 +1582,75 @@ describe("桌面主流程", () => {
     }));
   });
 
+  it("其他设置独立保存通知系统代理，保留商城设置与未保存草稿", async () => {
+    current.config = { ...current.config!, notificationUseSystemProxy: true };
+    bridge.invoke.mockImplementation(async (name: string, args?: Record<string, any>) => {
+      if (name === "get_desktop_snapshot") return structuredClone(current);
+      if (name === "set_notification_use_system_proxy") { current.config!.notificationUseSystemProxy = args!.enabled; return { message: null }; }
+      throw new Error(`Unexpected command: ${name}`);
+    });
+    render(Page);
+    await screen.findByRole("button", { name: "开始监控" });
+    await fireEvent.click(screen.getByRole("button", { name: "代理池" }));
+    expect(screen.queryByRole("checkbox", { name: "通知使用系统代理（如有）" })).toBeNull();
+    await fireEvent.click(screen.getByRole("checkbox", { name: "使用系统代理" }));
+    await fireEvent.click(screen.getByRole("button", { name: "其他设置" }));
+    const toggle = screen.getByRole("checkbox", { name: "通知使用系统代理（如有）" });
+    expect((toggle as HTMLInputElement).checked).toBe(true);
+    await fireEvent.click(toggle);
+    await waitFor(() => expect(bridge.invoke).toHaveBeenCalledWith("set_notification_use_system_proxy", { enabled: false }));
+    expect(current.config!.useSystemProxy).toBe(true);
+    await fireEvent.click(screen.getByRole("button", { name: "代理池" }));
+    expect((screen.getByRole("checkbox", { name: "使用系统代理" }) as HTMLInputElement).checked).toBe(false);
+  });
+
+  it("连续切换自动监控和通知代理不会回写旧设置", async () => {
+    const autoSaved = deferred<any>();
+    bridge.invoke.mockImplementation(async (name: string, args?: Record<string, any>) => {
+      if (name === "get_desktop_snapshot") return structuredClone(current);
+      if (name === "set_auto_start_monitoring") {
+        current.config!.autoStartMonitoring = args!.enabled;
+        return autoSaved.promise;
+      }
+      if (name === "set_notification_use_system_proxy") { current.config!.notificationUseSystemProxy = args!.enabled; return { message: null }; }
+      if (name === "save_monitoring_config") { current.config = structuredClone(args!.config); return { message: null }; }
+      throw new Error(`Unexpected command: ${name}`);
+    });
+    render(Page);
+    await screen.findByRole("button", { name: "开始监控" });
+    await fireEvent.click(screen.getByRole("button", { name: "其他设置" }));
+    await fireEvent.click(screen.getByRole("checkbox", { name: "启动后自动开启监控" }));
+    await fireEvent.click(screen.getByRole("checkbox", { name: "通知使用系统代理（如有）" }));
+    await waitFor(() => expect(current.config!.notificationUseSystemProxy).toBe(false));
+    expect(current.config!.autoStartMonitoring).toBe(false);
+    autoSaved.resolve({ message: null });
+    await waitFor(() => expect((screen.getByRole("checkbox", { name: "启动后自动开启监控" }) as HTMLInputElement).checked).toBe(false));
+    expect(bridge.invoke.mock.calls.some(([name]) => name === "save_monitoring_config")).toBe(false);
+  });
+
+  it("整页设置保存期间暂停通知代理开关，完成后可独立修改", async () => {
+    const saved = deferred<any>();
+    bridge.invoke.mockImplementation(async (name: string, args?: Record<string, any>) => {
+      if (name === "get_desktop_snapshot") return structuredClone(current);
+      if (name === "save_monitoring_config") { await saved.promise; current.config = structuredClone(args!.config); return { message: null }; }
+      if (name === "set_notification_use_system_proxy") { current.config!.notificationUseSystemProxy = args!.enabled; return { message: null }; }
+      throw new Error(`Unexpected command: ${name}`);
+    });
+    render(Page);
+    await screen.findByRole("button", { name: "开始监控" });
+    await fireEvent.click(screen.getByRole("button", { name: "速率" }));
+    await fireEvent.input(screen.getByLabelText("最小检查间隔（秒）"), { target: { value: "1.2" } });
+    await fireEvent.click(screen.getByRole("button", { name: "保存设置" }));
+    await fireEvent.click(screen.getByRole("button", { name: "其他设置" }));
+    const toggle = screen.getByRole("checkbox", { name: "通知使用系统代理（如有）" }) as HTMLInputElement;
+    expect(toggle.disabled).toBe(true);
+    saved.resolve({ message: null });
+    await waitFor(() => expect(toggle.disabled).toBe(false));
+    await fireEvent.click(toggle);
+    await waitFor(() => expect(current.config!.notificationUseSystemProxy).toBe(false));
+    expect(current.config!.rate.intervalMinMs).toBe(1200);
+  });
+
   it("未保存的速率修改可重置，切换页面后仍有明确的待保存状态", async () => {
     render(Page);
     await screen.findByRole("button", { name: "开始监控" });
@@ -1550,7 +1668,7 @@ describe("桌面主流程", () => {
     expect((screen.getByLabelText("最小检查间隔（秒）") as HTMLInputElement).value).toBe("1");
     expect(screen.getByRole("button", { name: "保存设置" }).hasAttribute("disabled")).toBe(true);
     expect(screen.queryByRole("button", { name: "重置更改" })).toBeNull();
-    expect(screen.getByText(/每轮列表检查间隔在 1～2 秒之间随机选取/)).toBeTruthy();
+    expect(screen.getByText(/每轮列表检查完成后，等待 1～2 秒/)).toBeTruthy();
     expect(screen.getByRole("heading", { name: "失败提醒通知" })).toBeTruthy();
     expect(screen.getByText("星期")).toBeTruthy();
     expect(screen.queryByText(/开始时间包含/)).toBeNull();
@@ -1572,6 +1690,28 @@ describe("桌面主流程", () => {
     expect(minimum.value).toBe("1.2");
     await fireEvent.click(screen.getByRole("button", { name: "重置更改" }));
     expect(minimum.value).toBe("1");
+  });
+
+  it("检查完成后的等待范围可以保存为零", async () => {
+    const originalInvoke = bridge.invoke.getMockImplementation()!;
+    bridge.invoke.mockImplementation(async (name: string, args?: Record<string, any>) => {
+      if (name === "save_monitoring_config") {
+        current.config = structuredClone(args!.config);
+        return { message: null };
+      }
+      return originalInvoke(name, args);
+    });
+    render(Page);
+    await screen.findByRole("button", { name: "开始监控" });
+    await fireEvent.click(screen.getByRole("button", { name: "速率" }));
+    for (const name of ["最小检查间隔（秒）", "最大检查间隔（秒）"]) {
+      const input = screen.getByLabelText(name) as HTMLInputElement;
+      expect(input.min).toBe("0");
+      await fireEvent.input(input, { target: { value: "0" } });
+    }
+    await fireEvent.click(screen.getByRole("button", { name: "保存设置" }));
+    await waitFor(() => expect(current.config!.rate.intervalMinMs).toBe(0));
+    expect(current.config!.rate.intervalMaxMs).toBe(0);
   });
 
   it("状态页仅展示正在选中的监控商品", async () => {

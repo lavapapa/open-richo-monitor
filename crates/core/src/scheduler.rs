@@ -577,15 +577,14 @@ impl fmt::Display for AcquireError {
 }
 
 struct GateTiming {
-    interval: Duration,
     scan_interval: Duration,
-    next_start: Duration,
     next_scan: Duration,
     cooldown_until: Option<Duration>,
 }
 
 pub struct RequestGate {
     requests: Arc<Semaphore>,
+    capacity: u32,
     admission: Mutex<()>,
     timing: StdMutex<GateTiming>,
     monitor_schedule: StdMutex<Option<ScheduleConfig>>,
@@ -602,11 +601,10 @@ impl RequestGate {
         let now = clock.monotonic_now();
         Self {
             requests: Arc::new(Semaphore::new(requests.max_concurrent_requests as usize)),
+            capacity: requests.max_concurrent_requests,
             admission: Mutex::new(()),
             timing: StdMutex::new(GateTiming {
-                interval: Duration::from_secs_f64(1.0 / requests.global_requests_per_second),
                 scan_interval,
-                next_start: now,
                 next_scan: now,
                 cooldown_until: None,
             }),
@@ -616,12 +614,18 @@ impl RequestGate {
         }
     }
 
-    pub fn reconfigure(&self, requests: &RequestConfig, scan_interval: Duration) {
+    pub fn reconfigure(&self, scan_interval: Duration) {
         let mut timing = self.timing.lock().expect("请求节奏锁已中毒");
-        timing.interval = Duration::from_secs_f64(1.0 / requests.global_requests_per_second);
         timing.scan_interval = scan_interval;
         drop(timing);
         self.changed.notify_waiters();
+    }
+
+    pub(crate) fn try_reserve_idle(&self) -> Option<OwnedSemaphorePermit> {
+        self.requests
+            .clone()
+            .try_acquire_many_owned(self.capacity)
+            .ok()
     }
 
     pub(crate) fn set_monitor_schedule(&self, schedule: &ScheduleConfig) {
@@ -766,9 +770,8 @@ impl RequestGate {
                 let deadline = {
                     let mut timing = self.timing.lock().expect("请求节奏锁已中毒");
                     timing.cooldown_until = timing.cooldown_until.filter(|until| *until > now);
-                    let mut deadline = timing.next_start.max(timing.cooldown_until.unwrap_or(now));
+                    let mut deadline = timing.cooldown_until.unwrap_or(now);
                     if now >= deadline {
-                        timing.next_start = now.saturating_add(timing.interval);
                         if scan {
                             timing.next_scan = now.saturating_add(timing.scan_interval);
                         }
@@ -870,6 +873,7 @@ async fn run_list(
 ) {
     let mut polling = scheduler.polling.subscribe();
     let mut due = scheduler.clock.monotonic_now();
+    let mut last_completed = None;
     let mut failures = 0_u32;
     let mut previous_window_end_wall: Option<SystemTime> = None;
     'round: loop {
@@ -907,9 +911,12 @@ async fn run_list(
                 if changed.is_err() { return; }
                 let requests = polling.borrow_and_update().0.clone();
                 let now = scheduler.clock.monotonic_now();
-                due = failure_backoff_due(now.saturating_add(jittered_interval(requests.interval,
-                    requests.jitter_percent, scheduler.jitter.sample())), now, failures,
-                    requests.failures_before_backoff, requests.failure_backoff);
+                due = match last_completed {
+                    Some(completed) => failure_backoff_due(next_due(completed, jittered_interval(requests.interval,
+                        requests.jitter_percent, scheduler.jitter.sample())), completed, failures,
+                        requests.failures_before_backoff, requests.failure_backoff),
+                    None => now,
+                };
                 continue;
             }
             running = wait_until(scheduler.clock.as_ref(), due, &mut control) => { if !running { return; } }
@@ -957,6 +964,7 @@ async fn run_list(
             },
         };
         let completed_at = scheduler.clock.monotonic_now();
+        last_completed = Some(completed_at);
         let completed_at_ms = unix_time_ms(scheduler.clock.wall_now());
         let (requests, alert_after) = polling.borrow_and_update().clone();
         failures = if result.is_ok() {
@@ -1036,6 +1044,7 @@ async fn run_line(
     mut control: watch::Receiver<RunState>,
 ) {
     let mut due = clock.monotonic_now();
+    let mut last_completed = None;
     let mut consecutive_failures = 0_u32;
     let mut previous_window_end_wall: Option<SystemTime> = None;
     loop {
@@ -1059,10 +1068,13 @@ async fn run_line(
                 if changed.is_err() { return; }
                 let requests = polling.borrow_and_update().0.clone();
                 let now = clock.monotonic_now();
-                due = failure_backoff_due(
-                    now.saturating_add(jittered_interval(requests.interval, requests.jitter_percent, jitter.sample())),
-                    now, consecutive_failures, requests.failures_before_backoff, requests.failure_backoff,
-                );
+                due = match last_completed {
+                    Some(completed) => failure_backoff_due(
+                        next_due(completed, jittered_interval(requests.interval, requests.jitter_percent, jitter.sample())),
+                        completed, consecutive_failures, requests.failures_before_backoff, requests.failure_backoff,
+                    ),
+                    None => now,
+                };
                 continue;
             }
             running = wait_until(clock.as_ref(), due, &mut control) => {
@@ -1111,6 +1123,7 @@ async fn run_line(
             result = request => result,
         };
         let completed_at = clock.monotonic_now();
+        last_completed = Some(completed_at);
         let completed_at_ms = unix_time_ms(clock.wall_now());
         let (requests, failure_alert_after) = polling.borrow_and_update().clone();
         let interval =
@@ -1144,7 +1157,7 @@ async fn run_line(
                 gate.cool_domain(retry_after.as_ref()).await;
             }
         }
-        due = next_due(started_at, completed_at, interval);
+        due = next_due(completed_at, interval);
         if result.is_ok() {
             consecutive_failures = 0;
         } else {
@@ -1413,8 +1426,8 @@ fn jittered_interval(base: Duration, jitter_percent: f64, sample: f64) -> Durati
     Duration::from_secs_f64(base.as_secs_f64() * scale)
 }
 
-fn next_due(started_at: Duration, completed_at: Duration, interval: Duration) -> Duration {
-    started_at.saturating_add(interval).max(completed_at)
+fn next_due(completed_at: Duration, interval: Duration) -> Duration {
+    completed_at.saturating_add(interval)
 }
 
 fn failure_backoff_due(
@@ -1762,12 +1775,20 @@ mod gate_tests {
             Duration::from_millis(2_000)
         );
         assert_eq!(
-            next_due(
-                Duration::from_millis(100),
-                Duration::from_millis(250),
-                Duration::from_millis(900)
-            ),
-            Duration::from_millis(1_000)
+            next_due(Duration::from_millis(250), Duration::from_millis(900)),
+            Duration::from_millis(1_150)
+        );
+        assert_eq!(
+            next_due(Duration::from_millis(250), Duration::ZERO),
+            Duration::from_millis(250)
+        );
+        assert_eq!(
+            jittered_interval(Duration::from_millis(500), 100.0, -1.0),
+            Duration::ZERO
+        );
+        assert_eq!(
+            jittered_interval(Duration::from_millis(500), 100.0, 1.0),
+            Duration::from_secs(1)
         );
         assert_eq!(
             failure_backoff_due(
@@ -1823,9 +1844,8 @@ mod gate_tests {
     }
 
     #[tokio::test]
-    async fn shared_gate_paces_requests_and_honors_domain_cooldown() {
+    async fn shared_gate_honors_domain_cooldown() {
         let mut config = detail_config();
-        config.requests.global_requests_per_second = 20.0;
         config.scan.interval = Duration::from_millis(1);
         let gate = RequestGate::new(
             &config.requests,
@@ -1835,9 +1855,7 @@ mod gate_tests {
         let (_control, mut receiver) = ControlToken::new();
         drop(gate.acquire_scan(1, &mut receiver).await.unwrap());
 
-        let before_cooldown = Instant::now();
         drop(gate.acquire_scan(2, &mut receiver).await.unwrap());
-        assert!(before_cooldown.elapsed() >= Duration::from_millis(40));
 
         gate.cool_domain(Some(&RetryAfter::Delay(Duration::from_millis(70))))
             .await;
@@ -1847,9 +1865,8 @@ mod gate_tests {
     }
 
     #[tokio::test]
-    async fn monitor_and_scan_share_global_start_budget() {
+    async fn monitor_can_start_immediately_after_scan() {
         let mut config = detail_config();
-        config.requests.global_requests_per_second = 20.0;
         config.scan.interval = Duration::from_millis(1);
         let gate = RequestGate::new(
             &config.requests,
@@ -1858,17 +1875,19 @@ mod gate_tests {
         );
         let (_control, mut receiver) = ControlToken::new();
         drop(gate.acquire_scan(1, &mut receiver).await.unwrap());
-        let started = Instant::now();
         drop(
-            gate.acquire_monitor_until(
-                &LineId::new(2, "direct"),
-                &mut receiver,
-                Duration::from_secs(10),
+            tokio::time::timeout(
+                Duration::from_millis(80),
+                gate.acquire_monitor_until(
+                    &LineId::new(2, "direct"),
+                    &mut receiver,
+                    Duration::from_secs(10),
+                ),
             )
             .await
+            .expect("监控请求应立即准入，不受固定每秒速率限制")
             .unwrap(),
         );
-        assert!(started.elapsed() >= Duration::from_millis(40));
     }
 
     #[test]
@@ -1972,7 +1991,6 @@ mod gate_tests {
     #[tokio::test]
     async fn scan_interval_is_applied_once_per_request() {
         let mut config = detail_config();
-        config.requests.global_requests_per_second = 100.0;
         config.scan.interval = Duration::from_millis(200);
         let gate = RequestGate::new(
             &config.requests,
@@ -1994,14 +2012,14 @@ mod gate_tests {
 
     #[tokio::test]
     async fn pausing_a_queued_scan_releases_admission_for_other_products() {
-        let mut config = detail_config();
-        config.requests.global_requests_per_second = 20.0;
+        let config = detail_config();
         let gate = Arc::new(RequestGate::new(
             &config.requests,
             config.scan.interval,
             Arc::new(TokioClock::default()),
         ));
-        gate.timing.lock().unwrap().next_start = Duration::from_millis(100);
+        gate.cool_domain(Some(&RetryAfter::Delay(Duration::from_millis(100))))
+            .await;
         let (scan_control, mut scan_receiver) = ControlToken::new();
         let scan_gate = gate.clone();
         let scan = tokio::spawn(async move { scan_gate.acquire_scan(1, &mut scan_receiver).await });
@@ -2031,8 +2049,7 @@ mod gate_tests {
     #[tokio::test]
     async fn cancelling_a_waiting_request_releases_its_gate_slot() {
         let mut config = detail_config();
-        config.requests.global_requests_per_second = 0.5;
-        config.scan.interval = Duration::from_millis(1);
+        config.scan.interval = Duration::from_secs(2);
         let gate = Arc::new(RequestGate::new(
             &config.requests,
             config.scan.interval,

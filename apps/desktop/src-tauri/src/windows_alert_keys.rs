@@ -101,6 +101,24 @@ unsafe extern "system" fn subclass(
     if message == WM_HOTKEY {
         let context = unsafe { &*(data as *const Context) };
         if let Some(binding) = context.binding.filter(|binding| binding.matches(wparam.0)) {
+            // 提醒窗口获得焦点时，由页面区分关闭键和已聚焦的购买按钮。
+            if let Some(window) = context
+                .app
+                .get_webview_window(crate::prominent_alert::LABEL)
+                .filter(|window| window.is_focused().unwrap_or(false))
+            {
+                let index = binding
+                    .ids
+                    .iter()
+                    .position(|&id| id as usize == wparam.0)
+                    .unwrap();
+                let key = ["Escape", " ", "Enter"][index];
+                let payload = serde_json::json!({ "eventId": binding.event_id, "presentationId": binding.presentation_id, "key": key });
+                if let Err(error) = window.eval(&format!("window.dispatchEvent(new CustomEvent('rm-prominent-hotkey',{{detail:{payload}}}));")) {
+                    write_log(&context.backend.data_dir, &error.to_string());
+                }
+                return LRESULT(0);
+            }
             let app = context.app.clone();
             let backend = context.backend.clone();
             tauri::async_runtime::spawn(async move {

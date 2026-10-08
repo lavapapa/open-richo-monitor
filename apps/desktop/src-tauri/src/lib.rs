@@ -1,5 +1,6 @@
 mod desktop_backend;
 mod desktop_notifications;
+mod feedback;
 mod notification_proxy;
 #[cfg(any(
     all(
@@ -124,6 +125,7 @@ fn install_tray(app: &tauri::App) -> tauri::Result<()> {
                 };
                 let app = app.clone();
                 tauri::async_runtime::spawn(async move {
+                    let _operation = backend.update_operation.lock().await;
                     let result = match backend.ensure_worker_alive() {
                         Ok(()) => backend
                             .app
@@ -228,9 +230,7 @@ fn forward_notification_proxy(backend: Arc<DesktopBackend>) {
     tauri::async_runtime::spawn(async move {
         while backend.exit_phase.load(Ordering::Acquire) == 0 {
             if let Ok(snapshot) = backend.app.snapshot().await {
-                if snapshot.config.use_system_proxy
-                    && snapshot.channels.iter().any(|channel| channel.enabled)
-                {
+                if snapshot.config.notification_use_system_proxy {
                     backend
                         .app
                         .set_notification_proxy_url(notification_proxy::current());
@@ -265,6 +265,7 @@ pub fn run() {
             desktop_backend::set_system_notifications_enabled,
             desktop_backend::save_monitoring_config,
             desktop_backend::set_auto_start_monitoring,
+            desktop_backend::set_notification_use_system_proxy,
             desktop_backend::monitoring_action,
             desktop_backend::validate_product,
             desktop_backend::add_product,
@@ -294,6 +295,7 @@ pub fn run() {
             desktop_backend::open_logs_directory,
             updates::check_for_updates,
             updates::install_update,
+            updates::set_auto_install_updates,
             desktop_backend::export_configuration_file,
             desktop_backend::import_configuration_file,
             desktop_backend::restore_defaults,
@@ -305,6 +307,8 @@ pub fn run() {
             prominent_alert::show_prominent_alert,
             prominent_alert::confirm_prominent_alert_frame,
             prominent_alert::dismiss_prominent_alert,
+            prominent_alert::complete_purchase,
+            feedback::submit_feedback,
             prominent_alert::test_prominent_alert,
             desktop_backend::create_diagnostic_preview,
             desktop_backend::save_diagnostic_report,
@@ -378,6 +382,12 @@ pub fn run() {
                 );
             }
             app.manage(backend.clone());
+            updates::load_preferences(app.handle());
+            if backend.update_restart_hidden {
+                if let Some(window) = app.get_webview_window("main") {
+                    window.hide()?;
+                }
+            }
             if let Err(error) = prominent_alert::prepare(app.handle()) {
                 desktop_backend::write_log(
                     &backend.data_dir,
@@ -438,6 +448,7 @@ pub fn run() {
                     let app = app.clone();
                     tauri::async_runtime::spawn(async move {
                         drain_worker(&backend).await;
+                        backend.exit_phase.store(2, Ordering::Release);
                         app.exit(code.unwrap_or(0));
                     });
                 }
@@ -453,7 +464,6 @@ async fn drain_worker(backend: &DesktopBackend) {
         let _ = worker.await;
     }
     backend.app.shutdown_notification_runtime().await;
-    backend.exit_phase.store(2, Ordering::Release);
 }
 
 #[cfg(test)]
@@ -492,5 +502,23 @@ mod tests {
         assert_eq!(decide_exit(&phase), ExitDecision::WaitForWorker);
         phase.store(2, Ordering::Release);
         assert_eq!(decide_exit(&phase), ExitDecision::Exit);
+    }
+
+    #[test]
+    fn update_and_quit_share_one_shutdown_owner() {
+        let phase = std::sync::Arc::new(AtomicU8::new(0));
+        let requests: Vec<_> = (0..2)
+            .map(|_| {
+                let phase = phase.clone();
+                std::thread::spawn(move || decide_exit(&phase))
+            })
+            .collect();
+        let owners = requests
+            .into_iter()
+            .map(|request| request.join().unwrap())
+            .filter(|decision| *decision == ExitDecision::DrainWorker)
+            .count();
+        assert_eq!(owners, 1);
+        assert_eq!(phase.load(Ordering::Acquire), 1);
     }
 }

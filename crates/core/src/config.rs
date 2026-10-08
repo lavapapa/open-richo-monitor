@@ -9,6 +9,10 @@ pub const fn default_auto_start_monitoring() -> bool {
     true
 }
 
+pub const fn default_notification_use_system_proxy() -> bool {
+    true
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MonitoringMode {
@@ -70,8 +74,6 @@ pub struct RequestConfig {
     pub failure_backoff: Duration,
     pub connect_timeout: Duration,
     pub total_timeout: Duration,
-    pub global_requests_per_second: f64,
-    pub global_burst: u32,
     pub max_concurrent_requests: u32,
     pub max_concurrent_per_line: u32,
 }
@@ -94,6 +96,8 @@ pub struct MonitorConfig {
     pub failure_alert_after: Duration,
     #[serde(default)]
     pub use_system_proxy: bool,
+    #[serde(default = "default_notification_use_system_proxy")]
+    pub notification_use_system_proxy: bool,
     #[serde(default)]
     pub use_proxy_pool: bool,
 }
@@ -111,8 +115,6 @@ impl Default for MonitorConfig {
                 failure_backoff: Duration::from_secs(20),
                 connect_timeout: Duration::from_secs(3),
                 total_timeout: Duration::from_secs(8),
-                global_requests_per_second: 2.0,
-                global_burst: 1,
                 max_concurrent_requests: 4,
                 max_concurrent_per_line: 1,
             },
@@ -122,6 +124,7 @@ impl Default for MonitorConfig {
             },
             failure_alert_after: Duration::from_secs(10 * 60),
             use_system_proxy: false,
+            notification_use_system_proxy: default_notification_use_system_proxy(),
             use_proxy_pool: false,
         }
     }
@@ -131,7 +134,6 @@ impl Default for MonitorConfig {
 pub enum ConfigError {
     NoScheduleDays,
     InvalidScheduleTime,
-    ZeroRequestInterval,
     InvalidJitter,
     ZeroFailureThreshold,
     ZeroFailureBackoff,
@@ -139,8 +141,6 @@ pub enum ConfigError {
     ZeroConnectTimeout,
     ZeroTotalTimeout,
     ConnectTimeoutExceedsTotal,
-    InvalidGlobalRate,
-    ZeroGlobalBurst,
     ZeroGlobalConcurrency,
     LineConcurrencyMustBeOne,
     ZeroScanInterval,
@@ -152,16 +152,13 @@ impl fmt::Display for ConfigError {
         let message = match self {
             Self::NoScheduleDays => "计划至少需要选择一天",
             Self::InvalidScheduleTime => "计划开始和结束时间无效",
-            Self::ZeroRequestInterval => "商品请求间隔必须大于零",
-            Self::InvalidJitter => "请求抖动必须大于等于零且小于 100%",
+            Self::InvalidJitter => "请求抖动必须在 0% 至 100% 之间",
             Self::ZeroFailureThreshold => "连续失败次数必须大于零",
             Self::ZeroFailureBackoff => "失败等待时间必须大于零",
             Self::ZeroFailureAlertDelay => "失败提醒时长必须大于零",
             Self::ZeroConnectTimeout => "连接超时必须大于零",
             Self::ZeroTotalTimeout => "总请求超时必须大于零",
             Self::ConnectTimeoutExceedsTotal => "连接超时不能超过总请求超时",
-            Self::InvalidGlobalRate => "全局请求速率必须是有限正数",
-            Self::ZeroGlobalBurst => "全局突发容量必须大于零",
             Self::ZeroGlobalConcurrency => "全局并发数必须大于零",
             Self::LineConcurrencyMustBeOne => "每条商品线路的并发数必须为一",
             Self::ZeroScanInterval => "扫描间隔必须大于零",
@@ -182,11 +179,8 @@ impl MonitorConfig {
         if self.schedule.start_minute >= 24 * 60 || self.schedule.end_minute >= 24 * 60 {
             return Err(ConfigError::InvalidScheduleTime);
         }
-        if self.requests.interval.is_zero() {
-            return Err(ConfigError::ZeroRequestInterval);
-        }
         if !self.requests.jitter_percent.is_finite()
-            || !(0.0..100.0).contains(&self.requests.jitter_percent)
+            || !(0.0..=100.0).contains(&self.requests.jitter_percent)
         {
             return Err(ConfigError::InvalidJitter);
         }
@@ -207,14 +201,6 @@ impl MonitorConfig {
         }
         if self.requests.connect_timeout > self.requests.total_timeout {
             return Err(ConfigError::ConnectTimeoutExceedsTotal);
-        }
-        if !self.requests.global_requests_per_second.is_finite()
-            || self.requests.global_requests_per_second <= 0.0
-        {
-            return Err(ConfigError::InvalidGlobalRate);
-        }
-        if self.requests.global_burst == 0 {
-            return Err(ConfigError::ZeroGlobalBurst);
         }
         if self.requests.max_concurrent_requests == 0 {
             return Err(ConfigError::ZeroGlobalConcurrency);
@@ -254,8 +240,6 @@ mod tests {
         assert_eq!(config.failure_alert_after, Duration::from_secs(10 * 60));
         assert_eq!(config.requests.connect_timeout, Duration::from_secs(3));
         assert_eq!(config.requests.total_timeout, Duration::from_secs(8));
-        assert_eq!(config.requests.global_requests_per_second, 2.0);
-        assert_eq!(config.requests.global_burst, 1);
         assert_eq!(config.requests.max_concurrent_requests, 4);
         assert_eq!(config.requests.max_concurrent_per_line, 1);
         assert_eq!(config.scan.interval, Duration::from_millis(500));
@@ -276,6 +260,23 @@ mod tests {
         assert!(!schedule.contains_local_time(0, 19 * 60));
         assert!(!schedule.contains_local_time(7, 10 * 60));
         assert!(!schedule.contains_local_time(0, 24 * 60));
+    }
+
+    #[test]
+    fn notifications_follow_system_proxy_independently_of_monitoring() {
+        let value = serde_json::to_value(MonitorConfig::default()).unwrap();
+        assert_eq!(value["notification_use_system_proxy"], true);
+        assert_eq!(value["use_system_proxy"], false);
+        let mut value = value;
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("notification_use_system_proxy");
+        assert!(
+            serde_json::from_value::<MonitorConfig>(value)
+                .unwrap()
+                .notification_use_system_proxy
+        );
     }
 
     #[test]
@@ -321,10 +322,13 @@ mod tests {
 
         let mut config = valid_config();
         config.requests.interval = Duration::ZERO;
-        assert_eq!(config.validate(), Err(ConfigError::ZeroRequestInterval));
+        assert_eq!(config.validate(), Ok(()));
 
         let mut config = valid_config();
         config.requests.jitter_percent = 100.0;
+        assert_eq!(config.validate(), Ok(()));
+
+        config.requests.jitter_percent = 100.1;
         assert_eq!(config.validate(), Err(ConfigError::InvalidJitter));
 
         let mut config = valid_config();
@@ -361,22 +365,6 @@ mod tests {
             config.validate(),
             Err(ConfigError::ConnectTimeoutExceedsTotal)
         );
-
-        let mut config = valid_config();
-        config.requests.global_requests_per_second = 0.0;
-        assert_eq!(config.validate(), Err(ConfigError::InvalidGlobalRate));
-
-        let mut config = valid_config();
-        config.requests.global_requests_per_second = f64::NAN;
-        assert_eq!(config.validate(), Err(ConfigError::InvalidGlobalRate));
-
-        let mut config = valid_config();
-        config.requests.global_requests_per_second = f64::INFINITY;
-        assert_eq!(config.validate(), Err(ConfigError::InvalidGlobalRate));
-
-        let mut config = valid_config();
-        config.requests.global_burst = 0;
-        assert_eq!(config.validate(), Err(ConfigError::ZeroGlobalBurst));
 
         let mut config = valid_config();
         config.requests.max_concurrent_requests = 0;

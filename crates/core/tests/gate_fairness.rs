@@ -57,12 +57,11 @@ impl SchedulerClient for CountingClient {
 }
 
 #[tokio::test]
-async fn two_products_and_scan_each_receive_repeated_global_request_slots() {
+async fn two_products_and_scan_each_receive_repeated_admission() {
     let mut config = MonitorConfig::default();
     config.monitoring_mode = ricoh_monitor_core::config::MonitoringMode::ProductDetail;
     config.schedule.start_minute = 0;
     config.schedule.end_minute = 0;
-    config.requests.global_requests_per_second = 20.0;
     config.requests.interval = Duration::from_millis(1);
     config.requests.jitter_percent = 0.0;
     config.scan.interval = Duration::from_millis(1);

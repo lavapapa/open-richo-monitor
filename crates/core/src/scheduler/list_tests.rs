@@ -174,7 +174,6 @@ fn scheduler(client: Arc<Pages>, clock: Arc<dyn SchedulerClock>) -> Scheduler {
     config.schedule.end_minute = 0;
     config.requests.interval = Duration::from_secs(30);
     config.requests.jitter_percent = 0.0;
-    config.requests.global_requests_per_second = 1000.0;
     Scheduler::new(config, client, clock, Arc::new(NoJitter)).unwrap()
 }
 

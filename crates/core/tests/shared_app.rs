@@ -610,7 +610,6 @@ async fn local_fixture_soak_records_progress_and_shuts_down() {
         config.schedule.end_minute = 23 * 60 + 59;
         config.requests.interval = Duration::from_millis(10);
         config.requests.jitter_percent = 0.0;
-        config.requests.global_requests_per_second = 90.0;
         config.requests.max_concurrent_requests = 4;
         storage.save_monitor_config(&config).unwrap();
         storage
@@ -714,7 +713,10 @@ async fn local_fixture_soak_records_progress_and_shuts_down() {
         data_dir.display()
     );
 
-    assert!(requests_mid > 0 && requests_after_stop > requests_mid, "两个采样阶段都应持续产生检查");
+    assert!(
+        requests_mid > 0 && requests_after_stop > requests_mid,
+        "两个采样阶段都应持续产生检查"
+    );
     assert_eq!(request_count, 1);
     assert_eq!(product_count, 1);
     // 超过保留阈值后的淘汰由 Storage 的定量测试独立验收；这里记录耐久吞吐。

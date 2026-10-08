@@ -695,6 +695,9 @@ pub(crate) fn forward(backend: Arc<DesktopBackend>, app: AppHandle) {
             let mut retry = false;
             {
                 let _operation = backend.prominent_operation.lock().await;
+                if backend.exit_phase.load(Ordering::Acquire) != 0 {
+                    break;
+                }
                 if backend.prominent_alert.lock().unwrap().is_none() {
                     match backend.app.claim_prominent_alert().await {
                         Ok(Some(alert)) => {
@@ -735,6 +738,20 @@ pub(crate) fn forward(backend: Arc<DesktopBackend>, app: AppHandle) {
             }
         }
     });
+}
+
+#[tauri::command]
+pub async fn complete_purchase(
+    app: AppHandle,
+    backend: State<'_, Arc<DesktopBackend>>,
+    event_id: i64,
+) -> Result<OperationResult, String> {
+    let _operation = backend.prominent_operation.lock().await;
+    dismiss_current(&app, &backend, event_id).await?;
+    app.emit_to("main", "purchase-completed", ())
+        .map_err(|e| e.to_string())?;
+    crate::show_main(&app);
+    Ok(OperationResult::ok())
 }
 
 #[tauri::command]
@@ -992,6 +1009,7 @@ pub async fn test_prominent_alert(
     product_id: String,
 ) -> Result<OperationResult, String> {
     let _operation = backend.prominent_operation.lock().await;
+    backend.ensure_worker_alive()?;
     let snapshot = backend
         .app
         .snapshot()

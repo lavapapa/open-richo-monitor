@@ -92,7 +92,6 @@ async fn prepare_held_stock(
         config.schedule.end_minute = 0;
         config.requests.interval = Duration::from_millis(20);
         config.requests.jitter_percent = 0.0;
-        config.requests.global_requests_per_second = 1000.0;
         db.save_monitor_config(&config)
     })
     .await

@@ -1,6 +1,6 @@
 //! 系统代理的静态解析及 Windows 原生目标解析，供 HTTP 客户端和通知宿主共用。
 const STATIC_PROXY_ERROR: &str =
-    "系统代理地址无效。请配置有效的静态 HTTP 或 HTTPS 代理，或在应用的代理池页面关闭系统代理。";
+    "系统代理地址无效。请检查静态 HTTP 或 HTTPS 代理，或关闭应用中对应的系统代理选项。";
 
 pub fn parse_static(enabled: bool, value: &str) -> Result<Option<String>, String> {
     parse_static_protocol(enabled, value, "https")
@@ -17,16 +17,18 @@ fn parse_static_protocol(
     // HTTPS/WSS 使用 https 映射；未分协议的地址适用于全部协议。
     // Windows 的 https= 表示目标协议，普通静态代理仍通过 HTTP CONNECT 连接。
     let address = if value.contains('=') {
-        value
-            .split(';')
-            .find_map(|entry| {
-                let (protocol, address) = entry.split_once('=')?;
-                protocol
-                    .trim()
-                    .eq_ignore_ascii_case(target_protocol)
-                    .then_some(address)
-            })
-            .ok_or_else(|| STATIC_PROXY_ERROR.to_string())?
+        let address = value.split(';').find_map(|entry| {
+            let (protocol, address) = entry.split_once('=')?;
+            protocol
+                .trim()
+                .eq_ignore_ascii_case(target_protocol)
+                .then_some(address)
+        });
+        // 未为目标协议配置代理时，沿用系统的直连行为。
+        let Some(address) = address else {
+            return Ok(None);
+        };
+        address
     } else {
         value
     }

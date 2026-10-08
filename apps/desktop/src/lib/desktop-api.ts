@@ -16,7 +16,8 @@ export type AvailabilityState = "unknown" | "out_of_stock" | "in_stock" | "error
 export type ChannelEvent = "stock_available" | "monitoring_failed" | "recovered";
 
 export interface UpdateStatus {
-  phase: "idle" | "checking" | "available" | "downloading" | "installing";
+  phase: "idle" | "checking" | "available" | "downloading" | "waiting" | "installing";
+  autoInstall: boolean;
   version: string | null;
   notes: string | null;
   downloaded: number;
@@ -43,6 +44,7 @@ export interface MonitoringConfig {
   schedule: ScheduleConfig;
   rate: RateConfig;
   useSystemProxy: boolean;
+  notificationUseSystemProxy: boolean;
   useProxyPool: boolean;
   failureAlertAfterMinutes: number;
 }
@@ -282,7 +284,7 @@ const previewSnapshot: DesktopSnapshot = {
     monitoringMode: "listed_products",
     schedule: { days: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"], start: "09:00", end: "19:00" },
     rate: { intervalMinMs: 1000, intervalMaxMs: 2000, failuresBeforeBackoff: 3, failureBackoffSeconds: 20 },
-    useSystemProxy: false, useProxyPool: false, failureAlertAfterMinutes: 10,
+    useSystemProxy: false, notificationUseSystemProxy: true, useProxyPool: false, failureAlertAfterMinutes: 10,
   },
   products: [
     { productId: "65", name: "官翻品 GR IIIx", enabled: true, prominentAlert: false, checkCount: 16385, observation: { availability: "in_stock", isShow: 1, stock: 3, checkedAt: "2026-10-06T10:42:18.284+08:00" }, runtimeError: null, metadata: { imageUrl: null, galleryUrls: [], price: "6749.0", unitName: "台", productNo: "B15289", isMemberCard: false, memberCardDays: null }, imagePath: "/catalog/65.jpg", metadataUpdatedAt: "2026-10-06T10:42:18+08:00", todayCheckCount: 702, todaySuccessCount: 702, todayFailureCount: 0, monitoringMs: 92_630_000 },
@@ -452,6 +454,7 @@ function previewCommand(name: string, payload: Record<string, any> = {}): unknow
       return result;
     }
     case "set_auto_start_monitoring": previewSnapshot.config!.autoStartMonitoring = payload.enabled; return result;
+    case "set_notification_use_system_proxy": previewSnapshot.config!.notificationUseSystemProxy = payload.enabled; return result;
     case "set_system_notifications_enabled": previewSnapshot.systemNotificationsEnabled = payload.enabled; return result;
     case "request_notification_permission": previewSnapshot.platform!.notificationPermission = "granted"; return structuredClone(previewSnapshot.platform);
     case "refresh_notification_permission": return structuredClone(previewSnapshot.platform);
@@ -538,12 +541,22 @@ export const desktopApi = {
     requireDesktop();
     return listen<UpdateStatus>("desktop-update", ({ payload }) => handler(payload));
   },
+  subscribePurchase: (handler: () => void): Promise<UnlistenFn> => {
+    if (isPreview()) return Promise.resolve(() => {});
+    requireDesktop();
+    return listen("purchase-completed", handler);
+  },
+  completePurchase: (eventId: number) => command<OperationResult>("complete_purchase", { eventId }),
+  submitFeedback: (content: string) => command<void>("submit_feedback", { content }),
   checkForUpdates: (): Promise<UpdateStatus> => isPreview()
-    ? Promise.resolve({ phase: "idle", version: null, notes: null, downloaded: 0, total: null, error: null })
+    ? Promise.resolve({ phase: "idle", autoInstall: true, version: null, notes: null, downloaded: 0, total: null, error: null })
     : command<UpdateStatus>("check_for_updates"),
-  installUpdate: (): Promise<void> => isPreview()
+  setAutoInstallUpdates: (enabled: boolean): Promise<UpdateStatus> => isPreview()
+    ? Promise.resolve({ phase: "idle", autoInstall: enabled, version: null, notes: null, downloaded: 0, total: null, error: null })
+    : invoke<UpdateStatus>("set_auto_install_updates", { enabled }),
+  installUpdate: (immediate = false): Promise<void> => isPreview()
     ? Promise.resolve()
-    : invoke<void>("install_update"),
+    : invoke<void>("install_update", { immediate }),
 
   validateProduct: (productId: string) =>
     command<ProductRecord>("validate_product", { productId }),
@@ -572,6 +585,7 @@ export const desktopApi = {
       ? Promise.resolve(previewSaveConfig(config))
       : command<OperationResult>("save_monitoring_config", { config }),
   setAutoStartMonitoring: (enabled: boolean) => command<OperationResult>("set_auto_start_monitoring", { enabled }),
+  setNotificationUseSystemProxy: (enabled: boolean) => command<OperationResult>("set_notification_use_system_proxy", { enabled }),
   monitoringAction: (action: "start" | "pause" | "resume" | "restart") =>
     isPreview()
       ? Promise.resolve(previewMonitoringAction(action))

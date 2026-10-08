@@ -22,6 +22,8 @@ pub(crate) struct DesktopBackend {
     pub worker_alive: AtomicBool,
     pub worker_task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     pub exit_phase: AtomicU8,
+    pub update_operation: tokio::sync::Mutex<()>,
+    pub update_restart_hidden: bool,
     pub prominent_alert: Mutex<Option<ricoh_monitor_core::app::ProminentAlert>>,
     pub prominent_operation: tokio::sync::Mutex<()>,
     pub prominent_view: crate::prominent_alert::ProminentView,
@@ -31,8 +33,11 @@ impl DesktopBackend {
     pub fn open(data_dir: impl AsRef<Path>, permission: PermissionState) -> Result<Self, String> {
         let data_dir = data_dir.as_ref();
         let app = MonitorApp::open(data_dir).map_err(|error| error.to_string())?;
-        app.apply_startup_monitoring()
-            .map_err(|error| error.to_string())?;
+        let restart = consume_update_restart(data_dir)?;
+        if restart.is_none() {
+            app.apply_startup_monitoring()
+                .map_err(|error| error.to_string())?;
+        }
         app.set_platform_notifications_available(permission == PermissionState::Granted);
         Ok(Self {
             app,
@@ -41,6 +46,8 @@ impl DesktopBackend {
             worker_alive: AtomicBool::new(true),
             worker_task: Mutex::new(None),
             exit_phase: AtomicU8::new(0),
+            update_operation: tokio::sync::Mutex::new(()),
+            update_restart_hidden: restart == Some(false),
             prominent_alert: Mutex::new(None),
             prominent_operation: tokio::sync::Mutex::new(()),
             prominent_view: crate::prominent_alert::ProminentView::default(),
@@ -75,7 +82,9 @@ impl DesktopBackend {
     }
 
     pub(crate) fn ensure_worker_alive(&self) -> Result<(), String> {
-        if self.worker_alive.load(Ordering::Acquire) {
+        if self.exit_phase.load(Ordering::Acquire) != 0 {
+            Err("正在安装更新，请等待应用重启。".into())
+        } else if self.worker_alive.load(Ordering::Acquire) {
             Ok(())
         } else {
             Err("监控任务已停止。请重新打开应用后再试。".into())
@@ -84,6 +93,19 @@ impl DesktopBackend {
 
     pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<AppSnapshot> {
         self.app.subscribe()
+    }
+}
+
+fn consume_update_restart(data_dir: &Path) -> Result<Option<bool>, String> {
+    let path = data_dir.join("update-restart.json");
+    match std::fs::read(&path) {
+        Ok(bytes) => {
+            let visible = serde_json::from_slice::<bool>(&bytes).map_err(|e| e.to_string())?;
+            std::fs::remove_file(path).map_err(|e| e.to_string())?;
+            Ok(Some(visible))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.to_string()),
     }
 }
 
@@ -277,10 +299,31 @@ pub async fn set_auto_start_monitoring(
 }
 
 #[tauri::command]
+pub async fn set_notification_use_system_proxy(
+    backend: State<'_, std::sync::Arc<DesktopBackend>>,
+    enabled: bool,
+) -> Result<OperationResult, String> {
+    backend
+        .app
+        .set_notification_proxy_url(crate::notification_proxy::current());
+    backend
+        .app
+        .set_notification_use_system_proxy(enabled)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(OperationResult::ok())
+}
+
+#[tauri::command]
 pub async fn save_monitoring_config(
     backend: State<'_, std::sync::Arc<DesktopBackend>>,
     config: AppConfig,
 ) -> Result<OperationResult, String> {
+    let _operation = backend.update_operation.lock().await;
+    backend.ensure_worker_alive()?;
+    backend
+        .app
+        .set_notification_proxy_url(crate::notification_proxy::current());
     backend
         .app
         .save_config(config)
@@ -294,6 +337,7 @@ pub async fn monitoring_action(
     backend: State<'_, std::sync::Arc<DesktopBackend>>,
     action: MonitoringAction,
 ) -> Result<OperationResult, String> {
+    let _operation = backend.update_operation.lock().await;
     backend.ensure_worker_alive()?;
     backend
         .app
@@ -364,6 +408,8 @@ pub async fn start_product_scan(
     start_id: String,
     end_id: String,
 ) -> Result<ProductScan, String> {
+    let _operation = backend.update_operation.lock().await;
+    backend.ensure_worker_alive()?;
     let start_id = parse_product_id(&start_id)?;
     let end_id = parse_product_id(&end_id)?;
     backend
@@ -378,6 +424,8 @@ pub async fn control_product_scan(
     backend: State<'_, std::sync::Arc<DesktopBackend>>,
     action: ScanAction,
 ) -> Result<ProductScan, String> {
+    let _operation = backend.update_operation.lock().await;
+    backend.ensure_worker_alive()?;
     backend
         .app
         .control_product_scan(action)
@@ -749,6 +797,8 @@ pub async fn import_configuration_file(
     }
     let contents =
         std::fs::read_to_string(&path).map_err(|error| format!("无法读取配置文件：{error}"))?;
+    let _operation = backend.update_operation.lock().await;
+    backend.ensure_worker_alive()?;
     backend
         .app
         .import_config(&contents)
@@ -762,6 +812,8 @@ pub async fn restore_defaults(
     backend: State<'_, std::sync::Arc<DesktopBackend>>,
     clear_history: bool,
 ) -> Result<OperationResult, String> {
+    let _operation = backend.update_operation.lock().await;
+    backend.ensure_worker_alive()?;
     backend
         .app
         .restore_defaults(clear_history)
@@ -774,6 +826,8 @@ pub async fn restore_defaults(
 pub async fn complete_setup(
     backend: State<'_, std::sync::Arc<DesktopBackend>>,
 ) -> Result<OperationResult, String> {
+    let _operation = backend.update_operation.lock().await;
+    backend.ensure_worker_alive()?;
     backend
         .app
         .complete_setup()
@@ -1144,6 +1198,35 @@ mod tests {
         let entry = login_start_contents(Path::new("/Applications/A&B/app"));
         assert!(entry.contains("/Applications/A&amp;B/app"));
         assert_eq!(xml_escape("<&\"'"), "&lt;&amp;&quot;&apos;");
+    }
+
+    #[tokio::test]
+    async fn update_restart_preserves_pause_and_consumes_window_marker() {
+        let directory = std::env::temp_dir().join(format!(
+            "ricoh-update-restart-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let backend = DesktopBackend::open(&directory, PermissionState::Granted).unwrap();
+        backend
+            .app
+            .monitoring_action(ricoh_monitor_core::app::MonitoringAction::Pause)
+            .await
+            .unwrap();
+        std::fs::write(directory.join("update-restart.json"), "false").unwrap();
+        drop(backend);
+        let restarted = DesktopBackend::open(&directory, PermissionState::Granted).unwrap();
+        assert!(restarted.update_restart_hidden);
+        assert_eq!(
+            restarted.app.snapshot().await.unwrap().runtime.state,
+            ricoh_monitor_core::app::RuntimeState::Paused
+        );
+        assert!(!directory.join("update-restart.json").exists());
+        drop(restarted);
+        let ordinary = DesktopBackend::open(&directory, PermissionState::Granted).unwrap();
+        assert!(!ordinary.update_restart_hidden);
+        drop(ordinary);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

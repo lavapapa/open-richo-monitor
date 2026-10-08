@@ -91,7 +91,6 @@ async fn prepare(
     config.schedule.end_minute = 0;
     config.requests.interval = Duration::from_millis(100);
     config.requests.jitter_percent = 0.0;
-    config.requests.global_requests_per_second = 1000.0;
     db.save_monitor_config(&config).unwrap();
     for id in ids {
         db.save_product_config(

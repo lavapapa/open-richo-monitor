@@ -5,8 +5,8 @@
   export let target: "draft" | "config";
   export let onChange: (key: keyof MonitoringConfig["rate"], value: number) => void;
   const fields: { key: keyof MonitoringConfig["rate"]; label: string; min: number; step: number }[] = [
-    { key: "intervalMinMs", label: "最小检查间隔（秒）", min: 0.1, step: 0.1 },
-    { key: "intervalMaxMs", label: "最大检查间隔（秒）", min: 0.1, step: 0.1 },
+    { key: "intervalMinMs", label: "最小检查间隔（秒）", min: 0, step: 0.1 },
+    { key: "intervalMaxMs", label: "最大检查间隔（秒）", min: 0, step: 0.1 },
     { key: "failuresBeforeBackoff", label: "连续失败几次后等待", min: 1, step: 1 },
     { key: "failureBackoffSeconds", label: "连续失败等待（秒）", min: 1, step: 1 },
   ];
@@ -25,7 +25,7 @@
   }
 </script>
 
-<p class="rate-hint">{monitoringMode === "listed_products" ? "每轮列表检查间隔" : "每个监控商品请求间隔"}在 {rate.intervalMinMs / 1000}～{rate.intervalMaxMs / 1000} 秒之间随机选取。</p>
+<p class="rate-hint">{monitoringMode === "listed_products" ? "每轮列表检查完成后" : "每个监控商品请求完成后"}，等待 {rate.intervalMinMs / 1000}～{rate.intervalMaxMs / 1000} 秒再开始下一次检查。</p>
 <div class="form-grid">
   {#each fields as field}
     <div class="form-row">

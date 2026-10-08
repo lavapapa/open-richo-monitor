@@ -248,6 +248,31 @@ test('凭据字段顺序变化及反复配置不会重建连接', async () => {
   await runtime.close();
 });
 
+test('扫码临时账号随通知线路切换重建，保留凭据和绑定状态', async () => {
+  const runtime = new Runtime({ emit: () => {} });
+  const started = [];
+  runtime.startAccount = async (account) => { started.push(account); };
+  const controller = new AbortController();
+  const binding = { id: 'pending', status: 'complete' };
+  const old = { id: 'pending', provider: 'dingtalk', enabled: true,
+    credentials: { appId: 'fixture', appSecret: 'secret' }, targets: [{ id: 'user', kind: 'user' }],
+    provisional: true, provisionalBinding: binding, transportKey: 'http://127.0.0.1:7890',
+    status: 'ready', abort: controller };
+  runtime.accounts.set(old.id, old);
+  await runtime.configure({ network: 'direct', accounts: [] });
+  const replacement = runtime.accounts.get(old.id);
+  assert.equal(controller.signal.aborted, true);
+  assert.notEqual(replacement, old);
+  assert.equal(replacement.transportKey, 'direct');
+  assert.equal(replacement.provisionalBinding, binding);
+  assert.equal(replacement.credentials, old.credentials);
+  assert.deepEqual(replacement.targets, old.targets);
+  assert.equal(started[0], replacement);
+  await runtime.configure({ network: 'direct', accounts: [] });
+  assert.equal(runtime.accounts.get(old.id), replacement, '同一线路保留临时配对');
+  await runtime.close();
+});
+
 test('微信默认值和运行中游标更新不触发重连，旧配置保留最新上下文', async () => {
   let calls = 0;
   const runtime = new Runtime({ emit: () => {}, fetchImpl: async (_input, options) => {
@@ -837,7 +862,7 @@ test('微信 iLink 业务层凭据失效停止轮询，其他拒绝响应进入�
   await retryRuntime.close();
 });
 
-test('direct 网络模式显式清空 Bun fetch 代理', async () => {
+test('Bun fetch 只传递宿主实际选择的代理', async () => {
   const originalBun = globalThis.Bun;
   if (!originalBun) globalThis.Bun = {};
   const calls = [];
@@ -845,7 +870,10 @@ test('direct 网络模式显式清空 Bun fetch 代理', async () => {
   try {
     await runtime.call('configure', { network: 'direct', accounts: [] });
     await runtime.fetch('https://example.test/');
-    assert.equal(calls[0].proxy, '');
+    assert.equal(calls[0].proxy, undefined);
+    await runtime.call('configure', { network: 'system_proxy', proxyUrl: 'http://127.0.0.1:8080', accounts: [] });
+    await runtime.fetch('https://example.test/');
+    assert.equal(calls[1].proxy, 'http://127.0.0.1:8080');
   } finally {
     await runtime.close();
     if (!originalBun) globalThis.Bun = originalBun;

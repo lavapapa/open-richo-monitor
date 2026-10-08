@@ -209,7 +209,7 @@ describe("三步首次设置", () => {
     const view = mount({ setupCompleted: true, products: [product("65", "官翻品 GR IIIx", true)],
       config: { autoStartMonitoring: true, monitoringMode: "listed_products", schedule: { days: ["mon", "fri"], start: "09:00", end: "19:00" },
         rate: { intervalMinMs: 1000, intervalMaxMs: 2000, failuresBeforeBackoff: 3, failureBackoffSeconds: 20 },
-        useSystemProxy: false, useProxyPool: false, failureAlertAfterMinutes: 10 } });
+        useSystemProxy: false, notificationUseSystemProxy: true, useProxyPool: false, failureAlertAfterMinutes: 10 } });
     await next();
     await fireEvent.click(screen.getByRole("button", { name: "跳过" }));
     expect(screen.queryByText(/当前监控计划/)).toBeNull();

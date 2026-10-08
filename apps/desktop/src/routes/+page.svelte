@@ -22,6 +22,9 @@
     type UpdateStatus,
   } from "$lib/desktop-api";
   import UpdateNotice from "$lib/UpdateNotice.svelte";
+  import SupportFlow from "$lib/SupportFlow.svelte";
+  import SupportButton from "$lib/SupportButton.svelte";
+  import support from "$lib/support.json";
   import ScheduleFields from "$lib/ScheduleFields.svelte";
   import RateFields from "$lib/RateFields.svelte";
   import ProductTile from "$lib/ProductTile.svelte";
@@ -61,6 +64,16 @@
   type Page = "status" | "notifications" | "rate" | "proxies" | "products" | "settings" | "setup";
   type ThemePreference = "light" | "dark" | "system";
   let theme: ThemePreference = "system";
+  let supportOpen = false;
+  let supportStep: "rating" | "feedback" = "rating";
+  let purchaseRatingPending = false;
+  function closeSupport() {
+    if (supportStep === "rating") localStorage.setItem("rm.purchase.reviewed", "true");
+    if (purchaseRatingPending) {
+      purchaseRatingPending = false;
+      supportStep = "rating";
+    } else supportOpen = false;
+  }
   type Notice = { kind: "error" | "success"; text: string };
   import type { MessageCursor, MessageItem } from "$lib/desktop-api";
 
@@ -92,7 +105,7 @@
       intervalMinMs: 1000, intervalMaxMs: 2000,
       failuresBeforeBackoff: 3, failureBackoffSeconds: 20,
     },
-    useSystemProxy: false, useProxyPool: false, failureAlertAfterMinutes: 10,
+    useSystemProxy: false, notificationUseSystemProxy: true, useProxyPool: false, failureAlertAfterMinutes: 10,
   });
   const messageDayFormat = new Intl.DateTimeFormat("zh-CN", { month: "numeric", day: "numeric", timeZone: "Asia/Shanghai" });
   const messageClockFormat = new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23", timeZone: "Asia/Shanghai" });
@@ -106,6 +119,7 @@
   let loading = true;
   let busy = false;
   let busyCount = 0;
+  let savingConfig = false;
   let pendingTests = new Set<string>();
   let pendingToggles = new Set<string>();
   let savingChannel = false;
@@ -155,7 +169,7 @@
   let clearHistory = false;
   let resetOpen = false;
   let appVersion = appInfo.version;
-  let updateStatus: UpdateStatus = { phase: "idle", version: null, notes: null, downloaded: 0, total: null, error: null };
+  let updateStatus: UpdateStatus = { phase: "idle", autoInstall: true, version: null, notes: null, downloaded: 0, total: null, error: null };
   let updateEventRevision = 0;
   let updateChecked = false;
   let showDateFilter = false;
@@ -352,6 +366,7 @@
       else messageHasUpdates = true;
     }
     if (!configDirty && next.config) config = structuredClone(next.config);
+    if (next.config) config = { ...config, notificationUseSystemProxy: next.config.notificationUseSystemProxy };
     if (firstSnapshot && !next.setupCompleted) navigate("setup");
     firstSnapshot = false;
   }
@@ -378,7 +393,18 @@
     let stop: (() => void) | undefined;
     let stopErrors: (() => void) | undefined;
     let stopUpdates: (() => void) | undefined;
+    let stopPurchase: (() => void) | undefined;
     let alive = true;
+    void desktopApi.subscribePurchase(() => {
+      if (alive && localStorage.getItem("rm.purchase.reviewed") !== "true") {
+        if (supportOpen) {
+          if (supportStep === "feedback") purchaseRatingPending = true;
+          return;
+        }
+        supportStep = "rating";
+        supportOpen = true;
+      }
+    }).then((stop) => { if (alive) stopPurchase = stop; else stop(); }).catch((cause) => { error = message(cause); });
     if (!desktopApi.previewMode) void getVersion().then((version) => { if (alive) appVersion = version; }).catch(() => {});
     void desktopApi.subscribe((next) => alive && adopt(next)).then((unlisten) => {
       stop = unlisten;
@@ -414,7 +440,7 @@
     messagesCollapsed = localStorage.getItem("rm.messages.collapsed") === "true";
     const dismissPreviewAlert = () => previewAlertOpen = false;
     window.addEventListener("rm-preview-alert-close", dismissPreviewAlert);
-    return () => { alive = false; snapshotRequest++; stop?.(); stopErrors?.(); stopUpdates?.(); window.removeEventListener("focus", refresh); window.removeEventListener("rm-preview-alert-close", dismissPreviewAlert); clearTimeout(toastTimer); };
+    return () => { alive = false; snapshotRequest++; stop?.(); stopErrors?.(); stopUpdates?.(); stopPurchase?.(); window.removeEventListener("focus", refresh); window.removeEventListener("rm-preview-alert-close", dismissPreviewAlert); clearTimeout(toastTimer); };
   });
 
   function changeTheme(preference: ThemePreference) {
@@ -521,7 +547,12 @@
       ? { ...savedConfig, ...rateFields(config) }
       : scope === "mode" ? { ...savedConfig, monitoringMode: config.monitoringMode }
       : { ...savedConfig, useSystemProxy: config.useSystemProxy, useProxyPool: config.useProxyPool };
-    await run(() => desktopApi.saveMonitoringConfig(next), "设置已保存。");
+    savingConfig = true;
+    try {
+      await run(() => desktopApi.saveMonitoringConfig(next), "设置已保存。");
+    } finally {
+      savingConfig = false;
+    }
   }
 
   function time(value: string | null | undefined) {
@@ -966,16 +997,22 @@
     }
   }
 
-  async function installUpdate() {
-    if (updateStatus.phase !== "available") return;
+  async function installUpdate(immediate = false) {
+    if (!["available", "waiting"].includes(updateStatus.phase)) return;
     const revision = updateEventRevision;
     const previous = updateStatus;
-    updateStatus = { ...updateStatus, phase: "installing", error: null };
+    updateStatus = { ...updateStatus, phase: "downloading", error: null };
     try {
-      await desktopApi.installUpdate();
+      await desktopApi.installUpdate(immediate);
     } catch (cause) {
       if (revision === updateEventRevision) updateStatus = { ...previous, phase: "available", error: message(cause) };
     }
+  }
+
+  async function changeAutoUpdate(enabled: boolean) {
+    const revision = updateEventRevision;
+    try { const status = await desktopApi.setAutoInstallUpdates(enabled); if (revision === updateEventRevision) updateStatus = status; }
+    catch (cause) { if (revision === updateEventRevision) updateStatus = { ...updateStatus, error: message(cause) }; }
   }
 
   async function openAppLink(key: "projectUrl" | "tutorialUrl" | "feedbackUrl") {
@@ -1023,7 +1060,7 @@
   {/if}
 
   <main class:status-page={page === "status"} bind:this={mainElement}>
-    {#if page !== "settings"}<UpdateNotice mode="banner" status={updateStatus} checked={updateChecked} onCheck={checkUpdates} onInstall={installUpdate} />{/if}
+    {#if page !== "settings"}<UpdateNotice mode="banner" status={updateStatus} checked={updateChecked} onCheck={checkUpdates} onInstall={installUpdate} onAutoChange={changeAutoUpdate} />{/if}
     {#if snapshot?.systemNotificationsEnabled && snapshot.platform?.notificationPermission === "denied"}<p class="notice error" role="alert">系统通知权限已关闭。请在系统设置中开启本应用通知，返回后点击“检查权限”。{#if page !== "notifications"}<button on:click={() => navigate("notifications")}>通知设置</button>{/if}</p>{/if}
     {#if snapshot?.systemNotificationsEnabled && snapshot.platform?.notificationPermissionError && notice?.text !== snapshot.platform.notificationPermissionError}<p class="notice error" role="alert">{snapshot.platform.notificationPermissionError}{#if page !== "notifications"}<button on:click={() => navigate("notifications")}>通知设置</button>{/if}</p>{/if}
     {#if error}<p class="notice error" role="alert">{error} <button on:click={refresh}>重试</button></p>{/if}
@@ -1044,6 +1081,7 @@
           {#if activeProducts.length}
             <div class="product-image-grid">{#each activeProducts as product (product.productId)}<ProductTile {product} compact selected={selectedProductId === product.productId} prominentPending={pendingToggles.has(`prominent:${product.productId}`)} onProminent={(enabled) => toggleProminent(product.productId, enabled)} onOpen={(origin) => openProductDetail(product, origin)} onToggle={(enabled) => toggleProduct(product.productId, enabled)} onError={(raw) => showError("检查失败", raw)} />{/each}</div>
           {:else}<p class="empty">{snapshot?.products.length ? "没有已启用的监控商品。" : "还没有监控商品。"}<button class="text-button" on:click={() => navigate("products")}>{snapshot?.products.length ? "管理商品" : "添加商品"}</button></p>{/if}
+          <div class="product-management-link"><button class="text-button" on:click={() => navigate("products")}>管理商品</button></div>
         </section>
         {#if !messagesCollapsed}
           <!-- 可聚焦的 separator 是键盘可操作的分隔条；编译器将该角色视为静态分隔线。 -->
@@ -1073,7 +1111,6 @@
           {#if messagePage > 0 || messageNextCursor}<div class="message-pagination"><button class="text-button" disabled={messagePage === 0 || messageLoading} on:click={() => void changeMessagePage(messagePage - 1)}>上一页</button><span>第 {messagePage + 1} 页</span><button class="text-button" disabled={!messageNextCursor || messageLoading} on:click={() => void changeMessagePage(messagePage + 1)}>下一页</button></div>{/if}
           </div>
         </section></div>
-        <div class="product-management-link"><button class="text-button" on:click={() => navigate("products")}>管理商品</button></div>
       </section>
     {:else if page === "notifications"}
       <section class="content">
@@ -1201,17 +1238,19 @@
           <div class="settings-row"><div><strong>帮助引导</strong><p>重新选择监控商品、设置通知与登录后启动。</p></div><button class="secondary" on:click={() => { resetConfig(); navigate("setup"); }}>帮助引导</button></div>
           <div class="settings-row"><div><strong>外观</strong><p>跟随系统时，外观随系统设置自动切换。</p></div><select aria-label="外观" value={theme} on:change={(event) => changeTheme(event.currentTarget.value as ThemePreference)}><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></div>
           <div class="settings-row"><div><strong>登录后启动</strong><p>登录系统后自动打开应用。</p></div><label class="switch"><input aria-label="登录后启动" type="checkbox" disabled={pendingToggles.has("login-start")} checked={snapshot?.platform?.loginStartEnabled ?? false} on:change={(event) => saveToggle("login-start", event.currentTarget, snapshot?.platform?.loginStartEnabled ?? false, (enabled) => desktopApi.setLoginStart(enabled))} /></label></div>
-          <div class="settings-row"><div><strong>启动后自动开启监控</strong><p>打开应用后按监控计划运行。</p></div><label class="switch"><input aria-label="启动后自动开启监控" type="checkbox" disabled={pendingToggles.has("auto-monitor")} checked={snapshot?.config?.autoStartMonitoring ?? true} on:change={(event) => saveToggle("auto-monitor", event.currentTarget, snapshot?.config?.autoStartMonitoring ?? true, (enabled) => desktopApi.setAutoStartMonitoring(enabled))} /></label></div>
+          <div class="settings-row"><div><strong>启动后自动开启监控</strong><p>打开应用后按监控计划运行。</p></div><label class="switch"><input aria-label="启动后自动开启监控" type="checkbox" disabled={savingConfig || pendingToggles.has("auto-monitor")} checked={snapshot?.config?.autoStartMonitoring ?? true} on:change={(event) => saveToggle("auto-monitor", event.currentTarget, snapshot?.config?.autoStartMonitoring ?? true, (enabled) => desktopApi.setAutoStartMonitoring(enabled))} /></label></div>
+          <div class="settings-row"><div><strong>通知使用系统代理（如有）</strong><p>未设置系统代理时直连，独立于商城请求设置。</p></div><label class="switch"><input aria-label="通知使用系统代理（如有）" type="checkbox" disabled={savingConfig || pendingToggles.has("notification-proxy")} checked={savedConfig.notificationUseSystemProxy} on:change={(event) => saveToggle("notification-proxy", event.currentTarget, savedConfig.notificationUseSystemProxy, desktopApi.setNotificationUseSystemProxy)} /></label></div>
           <div class="settings-row"><div><strong>日志目录</strong><p>查看应用运行记录。</p></div><button class="secondary" on:click={() => run(() => desktopApi.openLogsDirectory())}>打开目录</button></div>
-          <UpdateNotice mode="settings" status={updateStatus} checked={updateChecked} onCheck={checkUpdates} onInstall={installUpdate} />
+          <UpdateNotice mode="settings" status={updateStatus} checked={updateChecked} onCheck={checkUpdates} onInstall={installUpdate} onAutoChange={changeAutoUpdate} />
         </section>
-        {#if snapshot?.platform && (snapshot.platform.projectUrl || snapshot.platform.tutorialUrl || snapshot.platform.feedbackUrl)}<section class="group settings-group"><h2>相关链接</h2>{#each [{ key: "projectUrl", label: "项目主页" }, { key: "tutorialUrl", label: "使用教程" }, { key: "feedbackUrl", label: "反馈" }] as item}{#if snapshot.platform[item.key as keyof typeof snapshot.platform]}<button class="link-row" on:click={() => openAppLink(item.key as "projectUrl" | "tutorialUrl" | "feedbackUrl")}>{item.label} <span aria-hidden="true">↗</span></button>{/if}{/each}</section>{/if}
+        {#if snapshot?.platform && (snapshot.platform.projectUrl || snapshot.platform.tutorialUrl || snapshot.platform.feedbackUrl)}<section class="group settings-group"><h2>相关链接</h2>{#each [{ key: "projectUrl", label: "项目主页" }, { key: "tutorialUrl", label: "使用教程" }, { key: "feedbackUrl", label: "反馈" }] as item}{#if snapshot.platform[item.key as keyof typeof snapshot.platform]}<button class="link-row" on:click={() => { if (item.key === "feedbackUrl") { supportStep = "feedback"; supportOpen = true; } else void openAppLink(item.key as "projectUrl" | "tutorialUrl"); }}>{item.label} {#if item.key !== "feedbackUrl"}<span aria-hidden="true">↗</span>{/if}</button>{/if}{/each}</section>{/if}
         <section class="group settings-group"><h2>数据与诊断</h2>
           <div class="settings-row"><div><strong>配置文件</strong><p>导入会合并商品和通知渠道，并按文件更新监控设置；导入后监控停止。导出不含通知凭据，导入渠道需重新测试后启用。</p></div><div class="actions"><button class="secondary" disabled={busy} on:click={() => run(async () => { if (await desktopApi.exportConfigurationFile()) notice = { kind: "success", text: "配置已导出。" }; })}>导出配置…</button><button class="secondary" disabled={busy} on:click={importConfigFile}>导入配置…</button></div></div>
           <div class="settings-row"><div><strong>诊断报告</strong><p>生成当前运行信息以便排查问题。</p></div><button class="secondary" on:click={() => run(async () => { diagnostic = await desktopApi.createDiagnosticPreview(); })}>生成预览</button></div>
           {#if diagnostic}<div class="diagnostic-preview"><textarea readonly rows="8" bind:value={diagnostic}></textarea><button class="secondary" on:click={() => run(() => desktopApi.saveDiagnosticReport(diagnostic))}>保存报告</button></div>{/if}
         </section>
         <section class="group settings-group"><h2>恢复</h2><div class="settings-row"><div><strong>恢复默认设置</strong><p>移除已添加的商品、渠道和代理。</p></div>{#if !resetOpen}<button class="danger-button" on:click={() => resetOpen = true}>恢复默认设置…</button>{/if}</div>{#if resetOpen}<div class="reset-confirm"><label><input type="checkbox" bind:checked={clearHistory} />同时删除历史记录</label><div class="actions"><button class="secondary" on:click={() => resetOpen = false}>取消</button><button class="danger-button" disabled={busy} on:click={restoreDefaults}>确认恢复</button></div></div>{/if}</section>
+        {#if support.fundingUrl}<div class="settings-support"><SupportButton url={support.fundingUrl} /></div>{/if}
       </section>
     {/if}
       {#if channelFormOpen}
@@ -1267,9 +1306,11 @@
     </dialog>{/if}
   </main>
 </div>
+{#if supportOpen}{#key supportStep}<SupportFlow initialStep={supportStep} onClose={closeSupport} />{/key}{/if}
 {#if previewAlertOpen}<div class="preview-alert" role="dialog" aria-label="突出提醒测试"><iframe title="突出提醒演示" src="/prominent-alert"></iframe><button class="preview-alert-close" aria-label="关闭突出提醒测试" on:click={() => previewAlertOpen = false}><X size={18} /></button></div>{/if}
 
 <style>
+  .settings-support { display: flex; justify-content: center; padding: 24px 0 8px; }
   :global(*) { box-sizing: border-box; }
   :global(body) { margin: 0; color: var(--foreground); background: var(--canvas); font: 15px/1.45 -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif; -webkit-font-smoothing: antialiased; font-variant-numeric: tabular-nums; }
   :global(::selection) { color: #fff; background: #a2252d; }
@@ -1514,7 +1555,7 @@
   .recent-messages .section-heading h2 { font-size: 15px; }
   .product-image-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 190px), 1fr)); min-width: 0; gap: 8px 4px; }
   .message-resizer { align-self: stretch; cursor: col-resize; touch-action: none; position: relative; width: 8px; padding: 0; border: 0; border-radius: 0; background: transparent; }
-  .message-resizer::before { content: ""; position: absolute; top: 8px; bottom: 0; left: 3px; width: 1px; background: var(--border); }
+  .message-resizer::before { content: ""; position: absolute; top: 0; bottom: 0; left: 3px; width: 1px; background: var(--border); }
   .message-resizer:hover::before, .message-resizer:focus-visible::before, .resizing .message-resizer::before { width: 2px; background: var(--accent); }
   .message-resizer:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
   .recent-messages { min-width: 0; padding: 8px 0 0 8px; }
@@ -1589,7 +1630,19 @@
   @container (max-width: 520px) { .monitoring-modes { grid-template-columns: 1fr; } }
   @media (max-width: 1180px) { .product-content.drawer-open { margin-right: 0; } .product-detail-drawer { box-shadow: -12px 0 35px rgb(0 0 0 / 18%); } }
   @media (max-width: 900px) { .shell { grid-template-columns: 164px minmax(0, 1fr); } .sidebar { padding-inline: 10px; } .brand-wordmark { width: 84px; } .brand-name { font-size: 10px; } nav button { font-size: 13px; } .product-list-heading { flex-wrap: wrap; gap: 12px; } .product-list-heading .actions { width: 100%; } }
-  @container (max-width: 600px) { .status-workspace, .status-workspace.messages-collapsed { grid-template-columns: 1fr; } .message-resizer { display: none; } .recent-messages { border-top: 1px solid var(--border) !important; padding: 10px 0; } .messages-collapsed .recent-messages { padding: 8px 0; } .messages-collapsed .recent-messages h2 { display: block; } .messages-collapsed .message-tools { margin-left: auto; } }
+  @media (min-width: 701px) {
+    main.status-page { display: flex; flex-direction: column; padding-bottom: 0; overflow: hidden; }
+    .status-content { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+    .status-line { flex-shrink: 0; }
+    .status-workspace { flex: 1; min-height: 0; align-items: stretch; overflow: hidden; }
+    .status-products { min-height: 0; overflow-y: auto; padding-bottom: 16px; }
+    .recent-messages { display: flex; flex-direction: column; min-height: 0; }
+    .recent-messages > .section-heading { flex-shrink: 0; }
+    .message-panel-body:not([hidden]) { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+    .recent-messages .message-scroll { flex: 1; min-height: 0; max-height: none; }
+    .status-workspace.messages-collapsed .recent-messages { border-left: 1px solid var(--border); }
+  }
+  @container (max-width: 600px) { .status-workspace, .status-workspace.messages-collapsed { grid-template-columns: 1fr; } .message-resizer { display: none; } .recent-messages { border-top: 1px solid var(--border) !important; border-left: 0 !important; padding: 10px 0; } .messages-collapsed .recent-messages { padding: 8px 0; } .messages-collapsed .recent-messages h2 { display: block; } .messages-collapsed .message-tools { margin-left: auto; } }
   @media (max-width: 700px) { .shell { display: block; } .sidebar { padding: 10px 12px; } .brand-signature { min-height: 44px; margin: 0 8px 8px; flex-direction: row; } .brand-wordmark { width: 54px; } nav button { min-height: 34px; } main { padding: 20px 14px 32px; } .status-line { flex-wrap: wrap; } .product-detail-drawer { width: min(100vw, 394px); } .prominent-test-row { flex-wrap: wrap; } }
   @media (max-width: 620px) { .product-management .product-toolbar { flex-wrap: wrap; } }
   @media (prefers-reduced-motion: reduce) { nav button, button.primary, button.secondary, button.danger-button { transition: none; } }

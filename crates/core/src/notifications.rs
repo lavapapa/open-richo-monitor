@@ -73,7 +73,11 @@ pub struct SendResult {
 
 impl SendResult {
     pub(crate) fn deferred(message: impl Into<String>) -> Self {
-        Self { outcome: "deferred".into(), message: message.into(), retryable: false }
+        Self {
+            outcome: "deferred".into(),
+            message: message.into(),
+            retryable: false,
+        }
     }
     pub fn failed(message: impl Into<String>) -> Self {
         Self {
@@ -102,6 +106,22 @@ struct Process {
 
 type Pending = Arc<Mutex<BTreeMap<u64, oneshot::Sender<Result<Value, String>>>>>;
 type Reply = oneshot::Receiver<Result<Value, String>>;
+
+fn isolate_proxy_environment(command: &mut Command) {
+    // Bun 在启动时读取代理环境；专用子进程的线路由宿主配置，避免继承遗留出口。
+    for key in [
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+        "no_proxy",
+    ] {
+        command.env_remove(key);
+    }
+}
 
 #[derive(Default)]
 struct AccountCancellation {
@@ -152,9 +172,13 @@ impl NotificationRuntime {
     }
 
     pub fn ready_account_ids(&self) -> Vec<String> {
-        self.accounts.lock().unwrap().iter()
+        self.accounts
+            .lock()
+            .unwrap()
+            .iter()
             .filter(|(_, account)| account.status == "ready")
-            .map(|(id, _)| id.clone()).collect()
+            .map(|(id, _)| id.clone())
+            .collect()
     }
 
     #[cfg(test)]
@@ -185,7 +209,10 @@ impl NotificationRuntime {
 
     pub async fn is_recovering(&self) -> bool {
         let state = self.state.lock().await;
-        !state.stopped && !self.closing.load(Ordering::Relaxed) && state.failures < 3 && state.retry_at.is_some()
+        !state.stopped
+            && !self.closing.load(Ordering::Relaxed)
+            && state.failures < 3
+            && state.retry_at.is_some()
     }
 
     pub async fn quiesce_account(&self, account_id: &str) -> Result<(), String> {
@@ -195,7 +222,8 @@ impl NotificationRuntime {
                 accounts.retain(|account| account["id"].as_str() != Some(account_id));
             }
             if state.process.is_some() {
-                self.exchange(&mut state, "configure", configuration.clone()).await?;
+                self.exchange(&mut state, "configure", configuration.clone())
+                    .await?;
             }
             state.configuration = Some(configuration);
         }
@@ -268,6 +296,7 @@ impl NotificationRuntime {
             command = Command::new("node");
             command.arg(&path);
         }
+        isolate_proxy_environment(&mut command);
         #[cfg(target_os = "windows")]
         {
             // CREATE_NO_WINDOW：通知模块通过管道通信，无需控制台窗口。
@@ -300,7 +329,9 @@ impl NotificationRuntime {
                 if value["event"] == "diagnostic" {
                     if let Some(value) = safe_diagnostic(&value["data"]) {
                         let mut records = diagnostics.lock().unwrap();
-                        if records.len() == 100 { records.pop_front(); }
+                        if records.len() == 100 {
+                            records.pop_front();
+                        }
                         records.push_back(value);
                     }
                     continue;
@@ -353,7 +384,10 @@ impl NotificationRuntime {
                     _ = tokio::time::sleep(Duration::from_secs(5)) => {},
                     _ = monitor.shutdown_signal.notified() => break,
                 }
-                if monitor.closing.load(Ordering::Relaxed) || monitor_closed.load(Ordering::Acquire) || !monitor.check_health(&monitor_closed).await {
+                if monitor.closing.load(Ordering::Relaxed)
+                    || monitor_closed.load(Ordering::Acquire)
+                    || !monitor.check_health(&monitor_closed).await
+                {
                     break;
                 }
             }
@@ -376,15 +410,24 @@ impl NotificationRuntime {
     async fn check_health(&self, closed: &Arc<AtomicBool>) -> bool {
         let reply = {
             let mut state = self.state.lock().await;
-            if self.closing.load(Ordering::Relaxed) || !state.process.as_ref().is_some_and(|process| Arc::ptr_eq(&process.stdout_closed, closed)) {
+            if self.closing.load(Ordering::Relaxed)
+                || !state
+                    .process
+                    .as_ref()
+                    .is_some_and(|process| Arc::ptr_eq(&process.stdout_closed, closed))
+            {
                 return false;
             }
             self.submit(&mut state, "status", json!({})).await
         };
         if let Ok((id, receiver)) = reply {
-            let result = tokio::time::timeout(Duration::from_secs(3), self.receive_reply(id, receiver)).await;
+            let result =
+                tokio::time::timeout(Duration::from_secs(3), self.receive_reply(id, receiver))
+                    .await;
             self.pending.lock().unwrap().remove(&id);
-            if matches!(result, Ok(Ok(_))) { return true; }
+            if matches!(result, Ok(Ok(_))) {
+                return true;
+            }
         }
         closed.store(true, Ordering::Release);
         for (_, sender) in std::mem::take(&mut *self.pending.lock().unwrap()) {
@@ -573,7 +616,11 @@ impl NotificationRuntime {
         }
         let mut state = self.state.lock().await;
         if let Err(message) = self.start(&mut state).await {
-            if !state.stopped && !self.closing.load(Ordering::Relaxed) && state.failures < 3 && state.retry_at.is_some() {
+            if !state.stopped
+                && !self.closing.load(Ordering::Relaxed)
+                && state.failures < 3
+                && state.retry_at.is_some()
+            {
                 return SendResult::deferred(message);
             }
             return SendResult::failed(message);
@@ -606,7 +653,10 @@ impl NotificationRuntime {
             Ok(value) => serde_json::from_value::<SendResult>(value)
                 .ok()
                 .filter(|result| {
-                    matches!(result.outcome.as_str(), "accepted" | "failed" | "unknown" | "deferred")
+                    matches!(
+                        result.outcome.as_str(),
+                        "accepted" | "failed" | "unknown" | "deferred"
+                    )
                 })
                 .unwrap_or_else(SendResult::unknown),
             Err(message) if message == "通知服务无法完成请求，请检查账户授权与连接状态" => {
@@ -660,18 +710,41 @@ fn safe_diagnostic(data: &Value) -> Option<Value> {
     let provider = data["provider"].as_str()?;
     let stage = data["stage"].as_str()?;
     if !["feishu", "dingtalk", "weixin", "wecom"].contains(&provider)
-        || !["connect", "send", "metadata"].contains(&stage) { return None; }
+        || !["connect", "send", "metadata"].contains(&stage)
+    {
+        return None;
+    }
     let mut result = json!({"provider":provider, "stage":stage});
     for field in ["httpStatus", "durationMs"] {
-        if let Some(value) = data[field].as_u64() { result[field] = value.into(); }
+        if let Some(value) = data[field].as_u64() {
+            result[field] = value.into();
+        }
     }
-    if let Some(code) = data["providerCode"].as_str().filter(|code| code.len() <= 64 && (code.parse::<i64>().is_ok() || ["Forbidden.AccessDenied.AccessTokenPermissionDenied", "staffId.notExisted", "robot.oto.notExist", "chatbotId.notAllow.sendOTO"].contains(code))) {
+    if let Some(code) = data["providerCode"].as_str().filter(|code| {
+        code.len() <= 64
+            && (code.parse::<i64>().is_ok()
+                || [
+                    "Forbidden.AccessDenied.AccessTokenPermissionDenied",
+                    "staffId.notExisted",
+                    "robot.oto.notExist",
+                    "chatbotId.notAllow.sendOTO",
+                ]
+                .contains(code))
+    }) {
         result["providerCode"] = code.into();
     }
-    if let Some(id) = data["requestId"].as_str().filter(|id| (8..=64).contains(&id.len()) && id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')) {
+    if let Some(id) = data["requestId"].as_str().filter(|id| {
+        (8..=64).contains(&id.len())
+            && id
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
+    }) {
         result["requestId"] = id.into();
     }
-    if let Some(outcome) = data["outcome"].as_str().filter(|value| ["accepted", "failed", "unknown", "deferred"].contains(value)) {
+    if let Some(outcome) = data["outcome"]
+        .as_str()
+        .filter(|value| ["accepted", "failed", "unknown", "deferred"].contains(value))
+    {
         result["outcome"] = outcome.into();
     }
     Some(result)
@@ -767,6 +840,36 @@ pub(crate) fn merge_credentials(current: &mut Value, update: &Value) {
 mod tests {
     use super::*;
 
+    #[test]
+    fn dedicated_runtime_does_not_inherit_proxy_or_bypass_variables() {
+        let mut command = Command::new("fixture");
+        for key in [
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "NO_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+            "no_proxy",
+        ] {
+            command.env(key, "fixture");
+        }
+        command.env("SystemRoot", "fixture-system");
+        isolate_proxy_environment(&mut command);
+        let variables = command.as_std().get_envs().collect::<BTreeMap<_, _>>();
+        assert_eq!(variables.len(), 9);
+        assert_eq!(
+            variables[std::ffi::OsStr::new("SystemRoot")],
+            Some(std::ffi::OsStr::new("fixture-system"))
+        );
+        for (key, value) in variables {
+            if key != "SystemRoot" {
+                assert!(value.is_none(), "{}", key.to_string_lossy());
+            }
+        }
+    }
+
     fn fixture() -> NotificationRuntime {
         let runtime = NotificationRuntime::default();
         runtime.set_path(
@@ -796,7 +899,10 @@ mod tests {
     #[tokio::test]
     async fn alive_but_unresponsive_runtime_is_reaped_and_restored() {
         let runtime = fixture();
-        runtime.configure(configuration(json!({"ignoreStatus":true})), false).await.unwrap();
+        runtime
+            .configure(configuration(json!({"ignoreStatus":true})), false)
+            .await
+            .unwrap();
         let (pid, closed) = {
             let state = runtime.state.lock().await;
             let process = state.process.as_ref().unwrap();
@@ -804,17 +910,43 @@ mod tests {
         };
         assert!(!runtime.check_health(&closed).await);
         assert!(closed.load(Ordering::Acquire));
-        assert!(runtime.request("fixture_target_name", json!({"accountId":"a","target":{"id":"chat-a","kind":"chat"}})).await.is_err());
+        assert!(runtime
+            .request(
+                "fixture_target_name",
+                json!({"accountId":"a","target":{"id":"chat-a","kind":"chat"}})
+            )
+            .await
+            .is_err());
         tokio::time::sleep(Duration::from_secs(2)).await;
-        runtime.request("fixture_target_name", json!({"accountId":"a","target":{"id":"chat-a","kind":"chat"}})).await.unwrap();
-        assert_ne!(runtime.state.lock().await.process.as_ref().unwrap().child.id(), pid);
+        runtime
+            .request(
+                "fixture_target_name",
+                json!({"accountId":"a","target":{"id":"chat-a","kind":"chat"}}),
+            )
+            .await
+            .unwrap();
+        assert_ne!(
+            runtime
+                .state
+                .lock()
+                .await
+                .process
+                .as_ref()
+                .unwrap()
+                .child
+                .id(),
+            pid
+        );
         runtime.shutdown().await;
     }
 
     #[tokio::test]
     async fn stable_process_crashing_before_next_request_starts_a_new_crash_streak() {
         let runtime = fixture();
-        runtime.configure(configuration(json!({})), false).await.unwrap();
+        runtime
+            .configure(configuration(json!({})), false)
+            .await
+            .unwrap();
         {
             let mut state = runtime.state.lock().await;
             state.failures = 2;
@@ -831,15 +963,25 @@ mod tests {
     #[tokio::test]
     async fn child_exiting_before_send_is_deferred_until_runtime_recovers() {
         let runtime = fixture();
-        runtime.configure(configuration(json!({})), false).await.unwrap();
+        runtime
+            .configure(configuration(json!({})), false)
+            .await
+            .unwrap();
         {
             let mut state = runtime.state.lock().await;
             let process = state.process.as_mut().unwrap();
             process.child.kill().await.unwrap();
             process.child.wait().await.unwrap();
         }
-        let target = NotificationTarget { id: "chat-a".into(), kind: "chat".into(), label: "Fixture".into() };
-        assert_eq!(runtime.send("a", &target, "fixture").await.outcome, "deferred");
+        let target = NotificationTarget {
+            id: "chat-a".into(),
+            kind: "chat".into(),
+            label: "Fixture".into(),
+        };
+        assert_eq!(
+            runtime.send("a", &target, "fixture").await.outcome,
+            "deferred"
+        );
         assert!(runtime.is_recovering().await);
         runtime.shutdown().await;
     }

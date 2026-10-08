@@ -33,12 +33,12 @@ describe("系统测试通知命令", () => {
 
 describe("应用更新", () => {
   it("检查、安装并订阅更新事件", async () => {
-    const status = { phase: "available", version: "0.2.0", notes: "修复问题", downloaded: 0, total: null, error: null } as const;
+    const status = { phase: "available", autoInstall: true, version: "0.2.0", notes: "修复问题", downloaded: 0, total: null, error: null } as const;
     bridge.invoke.mockResolvedValue(status);
     await expect(desktopApi.checkForUpdates()).resolves.toEqual(status);
     expect(bridge.invoke).toHaveBeenLastCalledWith("check_for_updates", undefined);
     await desktopApi.installUpdate();
-    expect(bridge.invoke).toHaveBeenLastCalledWith("install_update");
+    expect(bridge.invoke).toHaveBeenLastCalledWith("install_update", { immediate: false });
     const receive = vi.fn();
     const stop = await desktopApi.subscribeUpdates(receive);
     const { listen } = await import("@tauri-apps/api/event");

@@ -36,7 +36,6 @@ impl Directory {
         config.schedule.end_minute = 0;
         config.requests.interval = Duration::from_millis(10);
         config.requests.jitter_percent = 0.0;
-        config.requests.global_requests_per_second = 100.0;
         config.scan.interval = Duration::from_millis(10);
         db.save_monitor_config(&config).unwrap();
         Self(path)

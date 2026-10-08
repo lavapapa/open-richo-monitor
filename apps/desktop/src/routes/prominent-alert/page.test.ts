@@ -1,11 +1,34 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/svelte";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import source from "./+page.svelte?raw";
-const api = vi.hoisted(() => ({ subscribeProminentAlert: vi.fn(), showProminentAlert: vi.fn(), confirmProminentAlertFrame: vi.fn(), dismissProminentAlert: vi.fn(), openExternalUrl: vi.fn() }));
+const api = vi.hoisted(() => ({ subscribeProminentAlert: vi.fn(), showProminentAlert: vi.fn(), confirmProminentAlertFrame: vi.fn(), dismissProminentAlert: vi.fn(), completePurchase: vi.fn(), openExternalUrl: vi.fn() }));
 vi.mock("$lib/desktop-api", () => ({ desktopApi: api, prominentImageSrc: (alert: { imagePath: string | null }) => alert.imagePath }));
 import Page from "./+page.svelte";
 beforeEach(() => { vi.resetAllMocks(); api.dismissProminentAlert.mockResolvedValue({ message: null }); api.showProminentAlert.mockResolvedValue(undefined); api.confirmProminentAlertFrame.mockResolvedValue(undefined); });
 afterEach(cleanup);
+
+it("买到后转入评价流程，按完成仍仅关闭提醒", async () => {
+  api.subscribeProminentAlert.mockImplementation(async (receive) => { receive({ eventId: 31, presentationId: 1, name: "GR IV", stock: 1, price: null, imagePath: null, imageUrl: null, at: "" }); return () => {}; });
+  api.completePurchase.mockResolvedValue({ message: null });
+  render(Page);
+  await fireEvent.click(await screen.findByRole("button", { name: "我买到了" }));
+  expect(api.completePurchase).toHaveBeenCalledExactlyOnceWith(31);
+  expect(api.dismissProminentAlert).not.toHaveBeenCalled();
+});
+
+it("Windows 转发的原生热键遵循聚焦按钮，旧交付不能关闭新提醒", async () => {
+  api.subscribeProminentAlert.mockImplementation(async (receive) => { receive({ eventId: 31, presentationId: 2, name: "GR IV", stock: 1, price: null, imagePath: null, imageUrl: null, at: "" }); return () => {}; });
+  api.completePurchase.mockResolvedValue({ message: null });
+  render(Page);
+  const buy = await screen.findByRole("button", { name: "我买到了" });
+  await waitFor(() => expect(api.showProminentAlert).toHaveBeenCalledWith(31, 2));
+  buy.focus();
+  window.dispatchEvent(new CustomEvent("rm-prominent-hotkey", { detail: { eventId: 31, presentationId: 1, key: "Enter" } }));
+  expect(api.completePurchase).not.toHaveBeenCalled();
+  window.dispatchEvent(new CustomEvent("rm-prominent-hotkey", { detail: { eventId: 31, presentationId: 2, key: "Enter" } }));
+  await waitFor(() => expect(api.completePurchase).toHaveBeenCalledExactlyOnceWith(31));
+  expect(api.dismissProminentAlert).not.toHaveBeenCalled();
+});
 
 it("突出提醒遮罩始终完全不透明", () => {
   const screenStyle = source.match(/\.alert-screen\s*\{([^}]+)\}/)?.[1];

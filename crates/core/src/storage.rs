@@ -2396,10 +2396,20 @@ mod tests {
         let mut storage = Storage::open_in_memory().unwrap();
         let original = storage.monitor_config().unwrap();
         let mut invalid = MonitorConfig::default();
-        invalid.requests.interval = Duration::ZERO;
+        invalid.requests.total_timeout = Duration::ZERO;
 
         assert!(storage.save_monitor_config(&invalid).is_err());
         assert_eq!(storage.monitor_config().unwrap(), original);
+    }
+
+    #[test]
+    fn zero_completion_delay_is_saved_and_loaded() {
+        let mut storage = Storage::open_in_memory().unwrap();
+        let mut config = MonitorConfig::default();
+        config.requests.interval = Duration::ZERO;
+        config.requests.jitter_percent = 0.0;
+        storage.save_monitor_config(&config).unwrap();
+        assert_eq!(storage.monitor_config().unwrap(), config);
     }
 
     #[test]

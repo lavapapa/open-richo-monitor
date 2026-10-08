@@ -21,9 +21,10 @@ pub(crate) fn current() -> Result<Option<String>, String> {
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows", test))]
-const AUTOMATIC_PROXY_ERROR: &str = "系统代理使用 PAC 或自动发现。请在系统设置改用静态 HTTP 或 HTTPS 代理，或在应用的代理池页面关闭系统代理。";
+const AUTOMATIC_PROXY_ERROR: &str = "系统代理使用 PAC 或自动发现，当前通知连接暂不支持。请在其他设置关闭通知系统代理，或使用静态 HTTPS 代理。";
 #[cfg(any(target_os = "macos", target_os = "windows", test))]
-const STATIC_PROXY_ERROR: &str = "系统代理地址无法用于通知。请配置有效的静态 HTTP 或 HTTPS 代理，或在应用的代理池页面关闭系统代理。";
+const STATIC_PROXY_ERROR: &str =
+    "系统代理地址无法用于通知。请检查静态 HTTPS 代理，或在其他设置关闭通知系统代理。";
 
 fn parse_windows(enabled: bool, value: &str) -> Result<Option<String>, String> {
     ricoh_monitor_core::system_proxy::parse_static(enabled, value)
@@ -42,9 +43,7 @@ fn parse(value: &str) -> Result<Option<String>, String> {
     }
     // 通知平台使用 HTTPS/WSS，复用系统的 HTTPS 代理地址。
     if settings.get("HTTPSEnable") != Some(&"1") {
-        return if settings.get("SOCKSEnable") == Some(&"1")
-            || settings.get("HTTPEnable") == Some(&"1")
-        {
+        return if settings.get("SOCKSEnable") == Some(&"1") {
             Err(STATIC_PROXY_ERROR.into())
         } else {
             Ok(None)
@@ -64,6 +63,7 @@ fn parse(value: &str) -> Result<Option<String>, String> {
         host.to_string()
     };
     parse_windows(true, &format!("http://{host}:{port}"))
+        .map_err(|_| STATIC_PROXY_ERROR.to_string())
 }
 
 #[cfg(test)]
@@ -104,13 +104,23 @@ mod tests {
     }
 
     #[test]
-    fn windows_static_proxy_rejects_missing_https_and_invalid_addresses() {
+    fn windows_static_proxy_without_https_mapping_is_direct() {
+        assert_eq!(
+            super::parse_windows(true, "http=proxy.example:8080"),
+            Ok(None)
+        );
+        assert_eq!(
+            super::parse_windows(true, "socks=proxy.example:1080"),
+            Ok(None)
+        );
+    }
+
+    #[test]
+    fn windows_static_proxy_rejects_invalid_addresses() {
         for settings in [
             "",
             " ",
             "https=",
-            "http=proxy.example:8080",
-            "socks=proxy.example:1080",
             "https=proxy.example:0",
             "https=proxy.example:65536",
             "https=proxy.example:abc",
@@ -134,6 +144,7 @@ mod tests {
             super::parse("HTTPSEnable : 0\nHTTPSProxy : 127.0.0.1\nHTTPSPort : 7890"),
             Ok(None)
         );
+        assert_eq!(super::parse("HTTPEnable : 1\nHTTPSEnable : 0"), Ok(None));
         assert_eq!(
             super::parse("HTTPSEnable : 1\nHTTPSProxy : ::1\nHTTPSPort : 7890"),
             Ok(Some("http://[::1]:7890/".into()))
@@ -146,13 +157,12 @@ mod tests {
             "ProxyAutoConfigEnable : 1",
             "ProxyAutoDiscoveryEnable : 1",
             "SOCKSEnable : 1",
-            "HTTPEnable : 1\nHTTPSEnable : 0",
             "HTTPSEnable : 1",
             "HTTPSEnable : 1\nHTTPSProxy : \nHTTPSPort : 7890",
             "HTTPSEnable : 1\nHTTPSProxy : 127.0.0.1\nHTTPSPort : 0",
         ] {
             let error = super::parse(settings).unwrap_err();
-            assert!(error.contains("代理池页面关闭系统代理"));
+            assert!(error.contains("其他设置关闭通知系统代理"));
         }
         assert_eq!(
             super::parse(

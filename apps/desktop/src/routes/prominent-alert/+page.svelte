@@ -37,18 +37,33 @@
     try { await desktopApi.dismissProminentAlert(current.eventId); if (desktopApi.previewMode && window.parent !== window) window.parent.dispatchEvent(new Event("rm-preview-alert-close")); }
     catch (cause) { if (presentationId === currentPresentation) { error = cause instanceof Error ? cause.message : "关闭提醒失败，请重试。"; closing = false; } }
   }
+  async function purchased() {
+    if (!alert || closing) return;
+    const current = alert;
+    const currentPresentation = presentationId;
+    closing = true;
+    try { await desktopApi.completePurchase(current.eventId); }
+    catch (cause) { if (presentationId === currentPresentation) { error = cause instanceof Error ? cause.message : "操作未完成，请重试。"; closing = false; } }
+  }
   onMount(() => {
     let stop: (() => void) | undefined;
     let mounted = true;
+    const hotkey = (event: Event) => {
+      const detail = (event as CustomEvent<{ eventId: number; presentationId: number; key: string }>).detail;
+      if (detail.eventId !== alert?.eventId || detail.presentationId !== presentationId) return;
+      if (detail.key !== "Escape" && document.activeElement instanceof HTMLButtonElement && document.activeElement.classList.contains("purchased")) void purchased();
+      else void dismiss();
+    };
+    window.addEventListener("rm-prominent-hotkey", hotkey);
     void desktopApi.subscribeProminentAlert((next) => { void receive(next); })
       .then((unsubscribe) => { if (mounted) stop = unsubscribe; else unsubscribe(); })
       .catch((cause) => { error = cause instanceof Error ? cause.message : "准备提醒失败。"; });
-    return () => { mounted = false; stop?.(); };
+    return () => { mounted = false; stop?.(); window.removeEventListener("rm-prominent-hotkey", hotkey); };
   });
 </script>
 
 <svelte:head><title>库存提醒 · RM</title></svelte:head>
-<svelte:window on:keydown={(event) => { if (["Escape", " ", "Enter"].includes(event.key)) { event.preventDefault(); void dismiss(); } }} />
+<svelte:window on:keydown={(event) => { if (event.key !== "Escape" && event.target instanceof HTMLButtonElement && event.target.classList.contains("purchased")) return; if (["Escape", " ", "Enter"].includes(event.key)) { event.preventDefault(); void dismiss(); } }} />
 <main class="alert-screen">
   <div class="alert-card">
   <header><img src="/brand/rm-wordmark.svg" alt="RM" /><button bind:this={closeButton} aria-label="关闭" title="关闭（Esc、空格或回车）" on:click={dismiss} disabled={closing || !alert}>ESC 关闭</button></header>
@@ -59,7 +74,7 @@
         <p class="eyebrow">库存提醒</p>
         <h1 id="alert-title">{alert.name}</h1>
         <div class="numbers"><div><small>商品价格</small><strong>{alert.price ? `¥${alert.price}` : "待更新"}</strong></div><div><small>库存数量</small><strong>{alert.stock}</strong></div></div>
-        <div class="actions"><button class="dismiss" on:click={dismiss} disabled={closing}>完成</button></div>
+        <div class="actions"><button class="dismiss" on:click={dismiss} disabled={closing}>完成</button>{#if !test}<button class="purchased" on:click={purchased} disabled={closing}>我买到了</button>{/if}</div>
       </div>
     </section>
     <footer><span>{appInfo.productName}</span>{#if !test}<time>{new Date(alert.at).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })} · 北京时间</time>{/if}</footer>
@@ -91,6 +106,7 @@
   button:disabled { opacity: .5; cursor: default; }
   .actions button { border-radius: 4px; padding: 16px 22px; }
   .dismiss { color: #fffdf4; background: #b6252e; border: 0; min-width: 100px; font-weight: 600; }
+  .purchased { color: #271b13; background: #fff7cb; border: 1px solid #9d842a; font-weight: 600; }
   footer { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 10px; font-size: 12px; color: #685724; }
   .error { color: #9c1820; background: #fffdf4; padding: 16px; }
   .loading { display: block; }

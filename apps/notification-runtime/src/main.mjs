@@ -56,7 +56,7 @@ export class Runtime {
       return fetchImpl(input, {
         ...options,
         ...(signal ? { signal } : {}),
-        ...(globalThis.Bun ? { proxy: this.proxyUrl ?? '' } : {}),
+        ...(globalThis.Bun && this.proxyUrl ? { proxy: this.proxyUrl } : {}),
       });
     };
     this.axiosInterceptorId = axios.interceptors.request.use((config) => this.applyRequestSignal(config));
@@ -175,7 +175,16 @@ export class Runtime {
         } else this.stopAccount(old);
         continue;
       }
-      if (!replacement && old.provisional) { next.set(id, old); continue; }
+      if (!replacement && old.provisional) {
+        if (old.transportKey === (this.proxyUrl ?? 'direct')) next.set(id, old);
+        else {
+          this.stopAccount(old);
+          next.set(id, { id, provider: old.provider, credentials: old.credentials, enabled: old.enabled,
+            targets: old.targets, provisional: true, provisionalBinding: old.provisionalBinding,
+            transportKey: this.proxyUrl ?? 'direct', status: 'connecting' });
+        }
+        continue;
+      }
       if (replacement && replacement.provider === old.provider && isDeepStrictEqual(connectionCredentials(replacement.provider, replacement.credentials), connectionCredentials(old.provider, old.credentials)) && replacement.transportKey === old.transportKey && replacement.enabled) {
         const { status, targets, credentials } = old;
         Object.assign(old, replacement, { status, targets, credentials, provisional: false });

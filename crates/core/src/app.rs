@@ -155,6 +155,8 @@ pub struct AppConfig {
     pub schedule: Schedule,
     pub rate: RateConfig,
     pub use_system_proxy: bool,
+    #[serde(default = "crate::config::default_notification_use_system_proxy")]
+    pub notification_use_system_proxy: bool,
     pub use_proxy_pool: bool,
     pub failure_alert_after_minutes: u32,
 }
@@ -1735,7 +1737,6 @@ impl MonitorApp {
     pub async fn save_config(&self, config: AppConfig) -> Result<(), AppError> {
         let monitor = config.into_monitor()?;
         self.settle_monitoring_time(true).await?;
-        let gate_requests = monitor.requests.clone();
         let scan_interval = monitor.scan.interval;
         let mut scan = self.scan.lock().await;
         let previous = self.call(|db| db.monitor_config()).await?;
@@ -1763,7 +1764,7 @@ impl MonitorApp {
             self.scan_epoch.send_modify(|epoch| *epoch += 1);
         }
         drop(scan);
-        self.request_gate.reconfigure(&gate_requests, scan_interval);
+        self.request_gate.reconfigure(scan_interval);
         self.snapshot().await?;
         Ok(())
     }
@@ -1782,6 +1783,17 @@ impl MonitorApp {
     pub async fn set_system_notifications_enabled(&self, enabled: bool) -> Result<(), AppError> {
         self.call(move |db| db.set_system_notifications_enabled(enabled))
             .await?;
+        self.snapshot().await?;
+        Ok(())
+    }
+
+    pub async fn set_notification_use_system_proxy(&self, enabled: bool) -> Result<(), AppError> {
+        self.call(move |db| {
+            let mut config = db.monitor_config()?;
+            config.notification_use_system_proxy = enabled;
+            db.save_monitor_config(&config)
+        })
+        .await?;
         self.snapshot().await?;
         Ok(())
     }
@@ -2018,7 +2030,7 @@ impl MonitorApp {
             .collect::<BTreeSet<_>>();
         let proxy_url = self.notification_proxy_url.lock().unwrap().clone();
         let configuration = self.call(move |db| {
-            let proxy_url = match (db.monitor_config()?.use_system_proxy, proxy_url) {
+            let proxy_url = match (db.monitor_config()?.notification_use_system_proxy, proxy_url) {
                 (true, Ok(proxy)) => proxy,
                 (true, Err(error)) => return Ok(Err(error)),
                 (false, _) => None,
@@ -2339,10 +2351,14 @@ impl MonitorApp {
             });
         }
         if public.status == "complete" {
-            public.private_chat_ready = Some(public.private_message_received == Some(true)
-                || public.provider == "feishu" && value["credentials"]["userOpenId"].as_str()
-                    .and_then(|id| value["credentials"]["p2pChatIds"][id].as_str())
-                    .is_some_and(|id| !id.is_empty()));
+            public.private_chat_ready = Some(
+                public.private_message_received == Some(true)
+                    || public.provider == "feishu"
+                        && value["credentials"]["userOpenId"]
+                            .as_str()
+                            .and_then(|id| value["credentials"]["p2pChatIds"][id].as_str())
+                            .is_some_and(|id| !id.is_empty()),
+            );
         }
         if public.status == "complete" {
             if let Some(credentials) = value.get("credentials").filter(|value| value.is_object()) {
@@ -2491,7 +2507,10 @@ impl MonitorApp {
             || input.binding_id.is_some()
             || previous_credentials != channel_credentials(&values);
         if credentials_changed && old_values.is_some() {
-            self.notification_runtime.quiesce_account(&id).await.map_err(AppError::Network)?;
+            self.notification_runtime
+                .quiesce_account(&id)
+                .await
+                .map_err(AppError::Network)?;
         }
         let notification_runtime = self.notification_runtime.clone();
         self.call(move |db| {
@@ -2622,7 +2641,11 @@ impl MonitorApp {
                     .await;
                 recipients.push(RecipientTest {
                     target,
-                    outcome: if result.outcome == "deferred" { "failed".into() } else { result.outcome },
+                    outcome: if result.outcome == "deferred" {
+                        "failed".into()
+                    } else {
+                        result.outcome
+                    },
                     message: result.message,
                 });
             }
@@ -2988,7 +3011,6 @@ impl MonitorApp {
         let import: ConfigExport = serde_json::from_str(text)
             .map_err(|e| AppError::InvalidInput(format!("配置文件无法读取：{e}")))?;
         let config = import.config.into_monitor()?;
-        let gate_requests = config.requests.clone();
         let scan_interval = config.scan.interval;
         let products = import
             .products
@@ -3065,14 +3087,13 @@ impl MonitorApp {
         }
         self.scan_epoch.send_modify(|epoch| *epoch += 1);
         drop(scan);
-        self.request_gate.reconfigure(&gate_requests, scan_interval);
+        self.request_gate.reconfigure(scan_interval);
         self.snapshot().await?;
         Ok(())
     }
 
     pub async fn restore_defaults(&self, clear_history: bool) -> Result<(), AppError> {
         let config = AppConfig::default().into_monitor()?;
-        let requests = config.requests.clone();
         let scan_interval = config.scan.interval;
         let mut scan = self.scan.lock().await;
         self.settle_monitoring_time(true).await?;
@@ -3086,7 +3107,7 @@ impl MonitorApp {
         *scan = None;
         self.scan_epoch.send_modify(|epoch| *epoch += 1);
         drop(scan);
-        self.request_gate.reconfigure(&requests, scan_interval);
+        self.request_gate.reconfigure(scan_interval);
         self.runtime_errors.lock().unwrap().clear();
         *self.last_error.lock().unwrap() = None;
         self.snapshot().await?;
@@ -3490,6 +3511,26 @@ impl MonitorApp {
             let _ = self.snapshot().await;
         }
         Ok(())
+    }
+
+    /// 安装更新时保留运行意愿，预留全部请求槽，阻止计划切换后新的请求进入。
+    pub async fn reserve_idle_update(
+        &self,
+    ) -> Result<Option<tokio::sync::OwnedSemaphorePermit>, AppError> {
+        let gate = self.request_gate.clone();
+        self.call(move |db| {
+            let config = db.monitor_config()?;
+            let (active, until_transition) =
+                schedule_state(&config.schedule, std::time::SystemTime::now());
+            if db.scan_active()?
+                || (db.run_intent()? == RunIntent::Running
+                    && (active || until_transition < std::time::Duration::from_secs(120)))
+            {
+                return Ok(None);
+            }
+            Ok(gate.try_reserve_idle())
+        })
+        .await
     }
 
     pub async fn monitoring_action(&self, action: MonitoringAction) -> Result<(), AppError> {
@@ -4367,7 +4408,12 @@ impl MonitorApp {
                                     generation,
                                 )
                                 .map_err(|error| error.to_string())?;
-                            if !valid || (waited_for_connection && !db.waiting_notification_is_current(&event, now_ms()).map_err(|error| error.to_string())?) {
+                            if !valid
+                                || (waited_for_connection
+                                    && !db
+                                        .waiting_notification_is_current(&event, now_ms())
+                                        .map_err(|error| error.to_string())?)
+                            {
                                 return Ok(false);
                             }
                             match &selected_recipient {
@@ -4395,7 +4441,9 @@ impl MonitorApp {
             } else if let Err(error) = &configured {
                 result = if self.notification_runtime.is_recovering().await {
                     SendResult::deferred(error.to_string())
-                } else { SendResult::failed(error.to_string()) };
+                } else {
+                    SendResult::failed(error.to_string())
+                };
             }
             if !applicable {
                 continue;
@@ -4535,7 +4583,11 @@ fn channel_credentials(values: &BTreeMap<String, String>) -> serde_json::Value {
     if let Some(packed) = values.get("_sdkCredentials") {
         let mut credentials = serde_json::from_str(packed).unwrap_or(serde_json::Value::Null);
         if let Some(token) = manual.get("botToken") {
-            if credentials.get("botToken").or_else(|| credentials.get("token")).is_some_and(|old| old != token) {
+            if credentials
+                .get("botToken")
+                .or_else(|| credentials.get("token"))
+                .is_some_and(|old| old != token)
+            {
                 for field in ["token", "contextTokens", "contextMetadata", "getUpdatesBuf"] {
                     credentials.as_object_mut().unwrap().remove(field);
                 }
@@ -4718,6 +4770,49 @@ mod prominent_wakeup_tests;
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn idle_update_reservation_blocks_new_requests_and_respects_activity() {
+        let directory = std::env::temp_dir().join(format!(
+            "ricoh-idle-update-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let app = MonitorApp::open(&directory).unwrap();
+        let lease = app.reserve_idle_update().await.unwrap().unwrap();
+        let (_control, mut receiver) = ControlToken::new();
+        assert!(tokio::time::timeout(
+            std::time::Duration::from_millis(20),
+            app.request_gate.acquire_scan(65, &mut receiver)
+        )
+        .await
+        .is_err());
+        drop(lease);
+        assert!(tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            app.request_gate.acquire_scan(65, &mut receiver)
+        )
+        .await
+        .is_ok());
+        app.call(|db| {
+            let mut config = db.monitor_config()?;
+            config.schedule.start_minute = 0;
+            config.schedule.end_minute = 0;
+            db.save_monitor_config(&config)?;
+            db.set_run_intent(RunIntent::Running, false)
+        })
+        .await
+        .unwrap();
+        assert!(app.reserve_idle_update().await.unwrap().is_none());
+        app.call(|db| db.set_run_intent(RunIntent::Paused, false))
+            .await
+            .unwrap();
+        assert!(app.reserve_idle_update().await.unwrap().is_some());
+        app.start_product_scan(700, 701).await.unwrap();
+        assert!(app.reserve_idle_update().await.unwrap().is_none());
+        drop(app);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
     fn detail_app_config() -> super::AppConfig {
         let mut config = super::AppConfig::default();
         config.monitoring_mode = crate::config::MonitoringMode::ProductDetail;
@@ -4736,11 +4831,17 @@ mod tests {
             ("_sdkCredentials".into(), serde_json::json!({"botToken":"old","token":"old","contextTokens":{"owner":"old-context"},"contextMetadata":{"owner":{"seq":"20"}},"getUpdatesBuf":"old-cursor"}).to_string()),
             ("botToken".into(), "old".into()),
         ]);
-        assert_eq!(channel_credentials(&values)["contextTokens"]["owner"], "old-context");
+        assert_eq!(
+            channel_credentials(&values)["contextTokens"]["owner"],
+            "old-context"
+        );
         values.insert("botToken".into(), "new".into());
         let credentials = channel_credentials(&values);
         for field in ["token", "contextTokens", "contextMetadata", "getUpdatesBuf"] {
-            assert!(credentials.get(field).is_none(), "旧会话字段 {field} 未清理");
+            assert!(
+                credentials.get(field).is_none(),
+                "旧会话字段 {field} 未清理"
+            );
         }
         assert_eq!(credentials["botToken"], "new");
     }
@@ -4895,7 +4996,6 @@ mod tests {
             let seed_url = url.clone();
             app.call(move |db| {
                 let mut config = db.monitor_config()?;
-                config.requests.global_requests_per_second = 100.0;
                 config.scan.interval = std::time::Duration::from_millis(1);
                 db.save_monitor_config(&config)?;
                 for &(id, name) in DEFAULT_PRODUCTS
@@ -5697,6 +5797,47 @@ mod tests {
         assert_eq!(monitor.scan.interval, std::time::Duration::from_millis(500));
     }
 
+    #[test]
+    fn completion_delay_range_accepts_zero_and_round_trips() {
+        for (min, max) in [(0, 0), (0, 1000), (0, 1), (300, 1000)] {
+            let mut config = AppConfig::default();
+            config.rate.interval_min_ms = min;
+            config.rate.interval_max_ms = max;
+            let monitor = config.clone().into_monitor().unwrap();
+            assert!(monitor.requests.jitter_percent.is_finite());
+            assert_eq!(AppConfig::from_monitor(monitor).rate, config.rate);
+        }
+        let mut config = AppConfig::default();
+        config.rate.interval_min_ms = 1000;
+        config.rate.interval_max_ms = 0;
+        assert!(config.into_monitor().is_err());
+    }
+
+    #[tokio::test]
+    async fn notification_proxy_and_startup_preferences_save_independently_and_persist() {
+        let directory = std::env::temp_dir().join(format!(
+            "ricoh-proxy-preferences-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let app = MonitorApp::open(&directory).unwrap();
+        let (startup, proxy) = tokio::join!(
+            app.set_auto_start_monitoring(false),
+            app.set_notification_use_system_proxy(false)
+        );
+        startup.unwrap();
+        proxy.unwrap();
+        let config = app.snapshot().await.unwrap().config;
+        assert!(!config.auto_start_monitoring);
+        assert!(!config.notification_use_system_proxy);
+        assert!(!config.use_system_proxy);
+        drop(app);
+        let app = MonitorApp::open(&directory).unwrap();
+        assert_eq!(app.snapshot().await.unwrap().config, config);
+        drop(app);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
     #[tokio::test]
     async fn importing_config_reconfigures_request_gate_without_restart() {
         let directory = std::env::temp_dir().join(format!(
@@ -5705,9 +5846,8 @@ mod tests {
             now_ms()
         ));
         let app = MonitorApp::open(&directory).unwrap();
-        let monitor = MonitorConfig::default();
         app.request_gate
-            .reconfigure(&monitor.requests, std::time::Duration::from_secs(5));
+            .reconfigure(std::time::Duration::from_secs(5));
         let imported = serde_json::to_string(&ConfigExport {
             config: detail_app_config(),
             products: vec![],
@@ -7685,7 +7825,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn notification_system_proxy_errors_block_binding_only_while_enabled() {
+    async fn notification_system_proxy_is_independent_and_missing_proxy_is_direct() {
         let directory = std::env::temp_dir().join(format!(
             "ricoh-sdk-system-proxy-{}-{}",
             std::process::id(),
@@ -7696,7 +7836,8 @@ mod tests {
             Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/notification_runtime.mjs"),
         );
         let mut config = AppConfig::default();
-        config.use_system_proxy = true;
+        config.use_system_proxy = false;
+        config.notification_use_system_proxy = true;
         app.save_config(config.clone()).await.unwrap();
         app.set_notification_proxy_url(Err(
             "系统代理使用 PAC，请配置静态 HTTPS 代理或关闭系统代理。".into(),
@@ -7708,17 +7849,20 @@ mod tests {
         assert!(blocked.is_err(), "系统代理错误被静默忽略，绑定仍使用直连");
         assert!(blocked.unwrap_err().to_string().contains("PAC"));
 
-        for (enabled, proxy, network, expected_url) in [
-            (false, Err("系统代理使用 PAC".into()), "direct", None),
-            (true, Ok(None), "direct", None),
+        for (monitor_proxy, notification_proxy, proxy, network, expected_url) in [
+            (true, false, Err("系统代理使用 PAC".into()), "direct", None),
+            (false, true, Ok(None), "direct", None),
+            (true, true, Ok(None), "direct", None),
             (
+                false,
                 true,
                 Ok(Some("http://127.0.0.1:7890/".into())),
                 "system_proxy",
                 Some("http://127.0.0.1:7890/"),
             ),
         ] {
-            config.use_system_proxy = enabled;
+            config.use_system_proxy = monitor_proxy;
+            config.notification_use_system_proxy = notification_proxy;
             app.save_config(config.clone()).await.unwrap();
             app.set_notification_proxy_url(proxy);
             let binding = app.begin_channel_binding("feishu").await.unwrap();
@@ -7803,7 +7947,11 @@ mod tests {
 
     #[tokio::test]
     async fn weixin_binding_reports_creator_private_message_without_exposing_context() {
-        let directory = std::env::temp_dir().join(format!("ricoh-private-received-{}-{}", std::process::id(), now_ms()));
+        let directory = std::env::temp_dir().join(format!(
+            "ricoh-private-received-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
         let app = MonitorApp::open(&directory).unwrap();
         for (index, contexts, received) in [
             (0, serde_json::json!({}), false),
@@ -7825,11 +7973,22 @@ mod tests {
 
     #[tokio::test]
     async fn binding_pairing_status_preserves_callbacks_and_feishu_open_chat() {
-        let directory = std::env::temp_dir().join(format!("ricoh-pairing-{}-{}", std::process::id(), now_ms()));
+        let directory =
+            std::env::temp_dir().join(format!("ricoh-pairing-{}-{}", std::process::id(), now_ms()));
         let app = MonitorApp::open(&directory).unwrap();
         for (provider, received, credentials, ready) in [
-            ("feishu", false, serde_json::json!({"userOpenId":"owner"}), false),
-            ("feishu", false, serde_json::json!({"userOpenId":"owner","p2pChatIds":{"owner":"private"}}), true),
+            (
+                "feishu",
+                false,
+                serde_json::json!({"userOpenId":"owner"}),
+                false,
+            ),
+            (
+                "feishu",
+                false,
+                serde_json::json!({"userOpenId":"owner","p2pChatIds":{"owner":"private"}}),
+                true,
+            ),
             ("wecom", true, serde_json::json!({}), true),
             ("dingtalk", false, serde_json::json!({}), false),
         ] {
@@ -7888,7 +8047,10 @@ mod tests {
             }))
             .await
             .unwrap();
-        assert!(binding.message.is_none(), "授权完成的通用文案不能遮住前端的具体初始化步骤");
+        assert!(
+            binding.message.is_none(),
+            "授权完成的通用文案不能遮住前端的具体初始化步骤"
+        );
         drop(app);
         std::fs::remove_dir_all(directory).unwrap();
     }
@@ -8643,23 +8805,48 @@ mod tests {
 
     #[tokio::test]
     async fn replacing_weixin_token_discards_queued_old_session_snapshots() {
-        let directory = std::env::temp_dir().join(format!("ricoh-token-change-{}-{}", std::process::id(), now_ms()));
+        let directory = std::env::temp_dir().join(format!(
+            "ricoh-token-change-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
         let app = MonitorApp::open(&directory).unwrap();
-        app.set_notification_runtime_path(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/notification_runtime.mjs"));
+        app.set_notification_runtime_path(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/notification_runtime.mjs"),
+        );
         let input = |token: &str| ChannelInput {
-            id: Some("wx-change".into()), name: "微信".into(), provider_id: "weixin".into(), binding_id: None,
-            targets: Some(vec![NotificationTarget { id: "owner".into(), kind: "user".into(), label: "Fixture".into() }]),
-            values: BTreeMap::from([("botToken".into(), token.into())]), subscriptions: vec![],
+            id: Some("wx-change".into()),
+            name: "微信".into(),
+            provider_id: "weixin".into(),
+            binding_id: None,
+            targets: Some(vec![NotificationTarget {
+                id: "owner".into(),
+                kind: "user".into(),
+                label: "Fixture".into(),
+            }]),
+            values: BTreeMap::from([("botToken".into(), token.into())]),
+            subscriptions: vec![],
         };
         app.save_channel(input("old-token")).await.unwrap();
-        app.configure_notification_runtime(Some("wx-change")).await.unwrap();
-        app.notification_runtime.request("fixture_context_update", serde_json::json!({"accountId":"wx-change"})).await.unwrap();
+        app.configure_notification_runtime(Some("wx-change"))
+            .await
+            .unwrap();
+        app.notification_runtime
+            .request(
+                "fixture_context_update",
+                serde_json::json!({"accountId":"wx-change"}),
+            )
+            .await
+            .unwrap();
         app.save_channel(input("new-token")).await.unwrap();
-        let credentials = app.call(|db| {
-            let saved = db.credential("channel", "wx-change")?.unwrap();
-            let values = serde_json::from_str(&saved).map_err(StorageError::ConfigJson)?;
-            Ok(channel_credentials(&values))
-        }).await.unwrap();
+        let credentials = app
+            .call(|db| {
+                let saved = db.credential("channel", "wx-change")?.unwrap();
+                let values = serde_json::from_str(&saved).map_err(StorageError::ConfigJson)?;
+                Ok(channel_credentials(&values))
+            })
+            .await
+            .unwrap();
         assert_eq!(credentials["botToken"], "new-token");
         assert!(credentials["contextTokens"].is_null());
         assert!(credentials["contextMetadata"].is_null());
@@ -8709,8 +8896,7 @@ mod tests {
             })
             .await
             .unwrap();
-        app.request_gate
-            .reconfigure(&scan_config.requests, scan_config.scan.interval);
+        app.request_gate.reconfigure(scan_config.scan.interval);
         let task = tokio::spawn({
             let app = app.clone();
             async move { app.run().await }
@@ -8752,8 +8938,7 @@ mod tests {
             })
             .await
             .unwrap();
-        app.request_gate
-            .reconfigure(&config.requests, config.scan.interval);
+        app.request_gate.reconfigure(config.scan.interval);
         let runner = tokio::spawn({
             let app = app.clone();
             async move { app.run().await }
@@ -8819,9 +9004,6 @@ mod tests {
         .await
         .unwrap();
         app.call(|db| {
-            let mut config = db.monitor_config()?;
-            config.requests.global_requests_per_second = 100.0;
-            db.save_monitor_config(&config)?;
             for id in ["proxy-a", "proxy-b"] {
                 db.save_proxy(&crate::storage::StoredProxy {
                     id: id.into(),
@@ -8851,8 +9033,7 @@ mod tests {
         .await
         .unwrap();
         let gate_config = app.call(|db| db.monitor_config()).await.unwrap();
-        app.request_gate
-            .reconfigure(&gate_config.requests, gate_config.scan.interval);
+        app.request_gate.reconfigure(gate_config.scan.interval);
         let running = tokio::spawn({
             let app = app.clone();
             async move { app.run().await }
@@ -8927,9 +9108,6 @@ mod tests {
         .await
         .unwrap();
         app.call(|db| {
-            let mut config = db.monitor_config()?;
-            config.requests.global_requests_per_second = 100.0;
-            db.save_monitor_config(&config)?;
             db.save_proxy(&crate::storage::StoredProxy {
                 id: "cooled-proxy".into(),
                 protocol: "http".into(),
@@ -8957,8 +9135,7 @@ mod tests {
         .await
         .unwrap();
         let config = app.call(|db| db.monitor_config()).await.unwrap();
-        app.request_gate
-            .reconfigure(&config.requests, config.scan.interval);
+        app.request_gate.reconfigure(config.scan.interval);
         let owner = tokio::spawn({
             let app = app.clone();
             async move { app.run().await }
@@ -9093,16 +9270,19 @@ impl AppConfig {
                 ),
             },
             rate: RateConfig {
-                interval_min_ms: (config.requests.interval.as_millis() as f64
+                interval_min_ms: (config.requests.interval.as_secs_f64()
+                    * 1000.0
                     * (1.0 - config.requests.jitter_percent / 100.0))
                     .round() as u64,
-                interval_max_ms: (config.requests.interval.as_millis() as f64
+                interval_max_ms: (config.requests.interval.as_secs_f64()
+                    * 1000.0
                     * (1.0 + config.requests.jitter_percent / 100.0))
                     .round() as u64,
                 failures_before_backoff: config.requests.failures_before_backoff,
                 failure_backoff_seconds: config.requests.failure_backoff.as_secs(),
             },
             use_system_proxy: config.use_system_proxy,
+            notification_use_system_proxy: config.notification_use_system_proxy,
             use_proxy_pool: config.use_proxy_pool,
             failure_alert_after_minutes: config.failure_alert_after.as_secs().div_ceil(60) as u32,
         }
@@ -9141,17 +9321,23 @@ impl AppConfig {
         config.schedule.end_minute = parse_time(&self.schedule.end)?;
         let min = self.rate.interval_min_ms;
         let max = self.rate.interval_max_ms;
-        if min == 0 || min > max {
+        if min > max {
             return Err(AppError::InvalidInput("商品请求间隔范围无效".into()));
         }
-        config.requests.interval = std::time::Duration::from_millis(min + (max - min) / 2);
-        config.requests.jitter_percent = ((max - min) as f64 * 100.0) / (max as f64 + min as f64);
+        config.requests.interval =
+            std::time::Duration::from_millis(min) + std::time::Duration::from_millis(max - min) / 2;
+        config.requests.jitter_percent = if max == 0 {
+            0.0
+        } else {
+            ((max - min) as f64 * 100.0) / (max as f64 + min as f64)
+        };
         config.requests.failures_before_backoff = self.rate.failures_before_backoff;
         config.requests.failure_backoff =
             std::time::Duration::from_secs(self.rate.failure_backoff_seconds);
         config.failure_alert_after =
             std::time::Duration::from_secs(u64::from(self.failure_alert_after_minutes) * 60);
         config.use_system_proxy = self.use_system_proxy;
+        config.notification_use_system_proxy = self.notification_use_system_proxy;
         config.use_proxy_pool = self.use_proxy_pool;
         config
             .validate()

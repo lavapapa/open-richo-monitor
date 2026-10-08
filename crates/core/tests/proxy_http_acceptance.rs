@@ -288,8 +288,6 @@ async fn manual_validation_updates_proxy_health_without_fallback() {
     config.monitoring_mode = ricoh_monitor_core::config::MonitoringMode::ProductDetail;
     config.use_proxy_pool = true;
     config.scan.interval = Duration::from_millis(1);
-    config.requests.global_requests_per_second = 1_000.0;
-    config.requests.global_burst = 10;
     {
         let mut storage = Storage::open(directory.0.join("monitor.sqlite3")).unwrap();
         storage.save_monitor_config(&config).unwrap();

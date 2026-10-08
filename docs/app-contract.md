@@ -4,7 +4,7 @@
 
 ## 监控方案
 
-配置 `monitoringMode` 取 `listed_products` 或 `product_detail`，默认 `listed_products`。列表模式每出口一条串行任务，分页到空页后对所有已选商品各提交一次检查；详情模式每商品、每出口一条线路。两种方案共用限流、计划、错误、统计、通知与持久化用例。随机间隔在列表模式表示轮次间隔，在详情模式表示商品线路间隔，实际节奏受请求耗时和全局请求门约束。
+配置 `monitoringMode` 取 `listed_products` 或 `product_detail`，默认 `listed_products`。列表模式每出口一条串行任务，分页到空页后对所有已选商品各提交一次检查；详情模式每商品、每出口一条线路。两种方案共用计划、错误、统计、通知与持久化用例。随机间隔从完成时刻计时：列表模式在整轮分页完成后等待，详情模式在单次请求完成后等待；范围允许从零开始，0～0 表示无额外等待。实际节奏由配置等待、请求耗时、并发和服务端冷却共同决定。
 
 列表模式每页请求 20 件，完整轮次最多 1000 件、51 页、60 秒。后页失败或结构异常放弃整轮结果，保留最近成功记录。完整轮次缺席的商品库存为 `None`，出现且库存为零的商品为 `Some(0)`；两者在观察、历史和界面中保持区分，缺席不更新元数据。配置方案变更推进商品代际，在途旧结果即使经过 A→B→A 切换也不能提交。分页限制与库存语义见[列表监控约定](list-monitoring-workplan.md)。
 
@@ -12,7 +12,7 @@
 
 Core 的请求序号、活跃失败累计时长和通知待投递记录持久化；网络任务重建及进程重启沿用已提交状态，关机、暂停和计划外时段不增加失败累计时长。显式取消某件商品结束该商品健康周期，其他商品保持各自状态。请求序号覆盖成功与失败检查，事件编号在清空记录后保持单调。
 
-商品验证、扫描和普通监控共用总请求预算，并通过公平准入排队；扫描自身间隔及暂停等待在准入队列外执行。调度器沿用共享请求门控的单调时钟，任务恢复或重建保持同一截止时间基准；列表准入因计划结束或用户停止而中断时放弃未完整读取的结果，不记录接口失败。每商品配置间隔表示目标节奏，多商品并行时还受总速率、并发和服务端冷却约束。Core 维护运行任务健康，任务异常结束发布 `worker_failed` 和具体诊断；既有库存观察保留其成功时间，界面显示该数据的历史属性。
+商品验证、扫描和普通监控共用并发准入与服务端冷却；扫描自身间隔及暂停等待在准入队列外执行。调度器沿用共享请求门控的单调时钟，任务恢复或重建保持同一截止时间基准；列表准入因计划结束或用户停止而中断时放弃未完整读取的结果，不记录接口失败。Core 维护运行任务健康，任务异常结束发布 `worker_failed` 和具体诊断；既有库存观察保留其成功时间，界面显示该数据的历史属性。
 
 消息查询由 Core 按北京时间日期和商品先过滤再分页，每页最多 100 条；前端保持单页数据，阅读旧页时保持当前位置。状态变化和提醒分别保留 30 天、最多 10000 行；每新增一条，在提交事务内最多裁掉一条最旧历史，数量上限与写入速率无关，既有超限数据继续分批回收。商品目录最多保存 1000 件，新增或更新的名称最多 1024 字节；超过限制返回明确错误，事务保持完整。检查次数在 SQLite 整数上限饱和，保持整数类型。
 
@@ -64,7 +64,7 @@ app.subscribe() -> broadcast::Receiver<AppSnapshot>
 app.run() -> Result<(), AppError>
 ```
 
-`MonitoringAction` 为 `Start | Pause | Resume | Stop | Restart`，`ScanAction` 为 `Pause | Resume | Cancel`。Core 存储单一 `RunIntent { Stopped, Running, Paused }`，新库默认 `Stopped`；`Start/Resume/Restart` 写 `Running`，`Pause` 写 `Paused`，`Stop` 写 `Stopped`。桌面常驻进程及 Linux 前台 `run` 持有运行循环；独立 CLI 控制进程直接读写同一 SQLite intent，status 读取同一运行快照，不通过 socket、JSON-RPC 或临时 IPC。`run` 与 systemd 自动重启读取并遵从意愿。桌面新进程由 `MonitorApp::apply_startup_monitoring` 应用 `AppConfig.autoStartMonitoring`：开启且已完成设置时写入运行意愿，关闭时以停止状态打开；运行仍受监控计划约束。关窗、托盘重新显示和重复启动不再次应用该偏好，暂停状态因此保留。`set_auto_start_monitoring` 保存未来启动偏好，当前运行意愿保持不变；登录后启动由操作系统独立管理。正常退出保持当前意愿及有效待发送记录。HTTP 客户端按唯一 `AppConfig.useSystemProxy` 配置系统代理或直连；Windows 库存、图片及通知请求按实际目标复用 WinHTTP 的 PAC、WPAD 与静态代理解析，解析在可取消的宿主子进程中执行并计入请求时限；其他系统沿用各自配置读取。系统通知权限、登录启动等 OS 能力仍属平台适配。
+`MonitoringAction` 为 `Start | Pause | Resume | Stop | Restart`，`ScanAction` 为 `Pause | Resume | Cancel`。Core 存储单一 `RunIntent { Stopped, Running, Paused }`，新库默认 `Stopped`；`Start/Resume/Restart` 写 `Running`，`Pause` 写 `Paused`，`Stop` 写 `Stopped`。桌面常驻进程及 Linux 前台 `run` 持有运行循环；独立 CLI 控制进程直接读写同一 SQLite intent，status 读取同一运行快照，不通过 socket、JSON-RPC 或临时 IPC。`run` 与 systemd 自动重启读取并遵从意愿。桌面新进程由 `MonitorApp::apply_startup_monitoring` 应用 `AppConfig.autoStartMonitoring`：开启且已完成设置时写入运行意愿，关闭时以停止状态打开；运行仍受监控计划约束。关窗、托盘重新显示和重复启动不再次应用该偏好，暂停状态因此保留。`set_auto_start_monitoring` 保存未来启动偏好，当前运行意愿保持不变；登录后启动由操作系统独立管理。正常退出保持当前意愿及有效待发送记录。商城 HTTP 客户端按 `AppConfig.useSystemProxy` 配置系统代理或直连，通知使用独立的 `notificationUseSystemProxy`；Windows 库存、图片及通知请求按实际目标复用 WinHTTP 的 PAC、WPAD 与静态代理解析，解析在可取消的宿主子进程中执行并计入请求时限；其他系统沿用各自配置读取。系统通知权限、登录启动等 OS 能力仍属平台适配。
 
 `RuntimeSnapshot.lastSuccessAt` 表示当前已启用商品最近一次持久化成功观察，直接由这些商品的 `observation.checkedAt` 求最新值。暂停或重启后保留已有成功时间，未取得成功观察时为空；停用商品不参与该值。Core 快照提供这一事实，前端无需自行重建或缓存。
 
@@ -80,9 +80,9 @@ Core 以 `AppSnapshot` 作为当前业务状态载体，历史消息由 `query_m
 
 `AppConfig` 是 Core 定义的唯一可编辑业务配置，字段以 [app.rs](../crates/core/src/app.rs) 的 `AppConfig` 为准。`autoStartMonitoring` 是持久化的应用启动偏好，与当前运行意愿及操作系统登录启动分别存储；默认值由 `MonitorConfig::default` 定义。计划起止时间相同时表示所选日期全天监控。商品勾选写 `ProductRecord.enabled`，渠道启停写 `ChannelView.enabled`，计划只存 `days`；Core 负责唯一校验和内部 `MonitorConfig` 转换。
 
-`AppConfig::default()` 从 `MonitorConfig::default()` 转换；默认计划、请求间隔、失败等待与提醒参数以该定义为准。商品按配置的目标节奏运行，扫描还受自身发送间隔约束，两者共用 `SharedRequestGate` 的总预算。系统通知偏好由 Core 单独存储，默认开启并出现在 `AppSnapshot.systemNotificationsEnabled`。内部并发上限和超时沿用 Core 默认，不暴露 UI。商品 ID 和启用状态只在 `products` 行保存，渠道启用状态只在 `channels` 行保存。
+`AppConfig::default()` 从 `MonitorConfig::default()` 转换；默认计划、请求间隔、失败等待与提醒参数以该定义为准。商品按配置的目标节奏运行，扫描还受自身发送间隔约束，两者共用 `RequestGate` 的并发准入与冷却。系统通知偏好由 Core 单独存储，默认开启并出现在 `AppSnapshot.systemNotificationsEnabled`。内部并发上限和超时沿用 Core 默认，不暴露 UI。商品 ID 和启用状态只在 `products` 行保存，渠道启用状态只在 `channels` 行保存。
 
-系统代理由用户显式启用，已有配置保持用户选择；商品验证、扫描及监控遵守保存的网络模式，启用代理池时通过可用池出口请求，空池保持等待或返回明确不可用错误。通知独立于库存代理池，按系统代理开关选择系统代理或直连。连接超时包含 DNS、代理隧道和 TLS 建立时间；错误详情保留原始错误链，并附网络模式、阶段、耗时与超时上限。网络失败按配置等待后继续检查，显式代理失败保持该出口，不自动切换路线。外部代理或服务故障的诊断与本项目请求构造、调度故障分开验收。
+商城系统代理由用户显式启用，已有配置保持用户选择；商品验证、扫描及监控遵守保存的网络模式，启用代理池时通过可用池出口请求，空池保持等待或返回明确不可用错误。通知通过独立的 `AppConfig.notificationUseSystemProxy` 控制，位于其他设置，默认开启；系统未配置适用代理时自然直连，关闭该选项时通知直连。通知独立于商城代理开关与代理池，开关通过单字段命令保存；整页监控配置保存期间暂停该开关，避免旧配置覆盖刚保存的选择。专用通知子进程移除继承的代理及绕过环境变量，由宿主传入实际系统线路；线路变化时，已保存账号与扫码临时账号均重建连接。macOS 通知目前使用静态 HTTPS 代理，PAC、自动发现及 SOCKS-only 配置会明确报错，系统绕过列表尚未传入通知运行时；Windows 通知按目标解析原生系统代理。连接超时包含 DNS、代理隧道和 TLS 建立时间；错误详情保留原始错误链，并附网络模式、阶段、耗时与超时上限。网络失败按配置等待后继续检查，显式代理失败保持该出口，不自动切换路线。外部代理或服务故障的诊断与本项目请求构造、调度故障分开验收。
 
 `AppSnapshot` 中的 `runtime` 使用现有 `RuntimeSnapshot` 字段：`state`、`nextStartAt`、`lastSuccessAt`、`lastError`。商品记录含 `productId: string`、`name`、`enabled`、`checkCount`、`observation`、`runtimeError`；`ProductObservation` 含最近一次有效观察的库存状态、`isShow`、数量和时间，当前请求错误只通过 `ProductRecord.runtimeError` 提供。渠道记录含 `id`、`name`、`providerId`、`providerName`、`enabled`、`configuredFieldKeys`、`subscriptions`、`lastTest`、`lastDelivery`，不含 Secret 或其存储引用。`lastDelivery` 为最近一次投递的 `{ outcome, event, at, message }`，outcome 为 `accepted | failed | unknown`。代理记录含 `id`、`protocol`、`displayAddress`、`enabled`、`status`。扫描记录的 `currentId` 仅在当前请求进行时有值，结果为未选中的商品记录。最近状态变化由 `recentChecks` 呈现，包含商品、`isShow`、库存和毫秒时间，独立于通知订阅保存。`recentEvents` 仅记录有货、持续失败和恢复等提醒事件；持续有货本身不重复提醒。
 
@@ -131,6 +131,10 @@ Core 定期检查通知子进程的响应，存活但无响应的进程会被回
 `ProxyInput { protocol: ProxyProtocol, host: String, port: u16, username: Option<String>, password: Option<String> }`；代理账号密码与通知凭据一同写入 SQLite 的 `credentials` 表，UI不可读回。旧引用没有 SQLite 凭据时会要求重新添加认证信息，代理请求不会静默退化成无认证请求。协议值为 `http | https | socks5`。代理视图仅含 `displayAddress`、启用状态和 `untested | available | cooldown | auto_disabled | manually_disabled` 状态。`ChannelTest { outcome, message }` 只表示平台业务接受或具体失败，不把 HTTP 发送成功说成用户已读。`ProductScan { id, startId, endId, currentId, checked, found, status, error, results }`；`currentId` 为当前请求中的 Product ID，其他时刻为 `null`。状态为 `running | paused | completed | cancelled | failed`，结果复用 `ProductRecord`，且新发现时 `enabled=false`。
 
 ## 平台边界
+
+真实突出提醒提供“我买到了”，关闭该提醒后在主窗口询问“好评／有一些意见／跳过”；同一安装的评价流程关闭后不再自动重复。好评页面提供 GitHub Star 与爱发电“打赏作者”按钮，设置页底部保留同一打赏入口。测试提醒不主动询问评价。设置页的“反馈”直接打开意见表单，关闭该表单不改变购买后评价的状态。反馈提交经桌面命令发送，包含用户填写的内容、应用版本和系统类型；提交前说明这些字段，服务确认持久化后才显示收到，失败保留输入。此流程不自动上传监控数据或账号资料。公开地址由 [`support.json`](../apps/desktop/src/lib/support.json) 定义。
+
+反馈服务使用 [`worker.mjs`](../services/feedback/worker.mjs) 接收 POST `/feedback` 并写入专用 Cloudflare KV；公开入口提供提交，后台内容通过 Cloudflare 控制台查看。部署时参照 [`wrangler.example.json`](../services/feedback/wrangler.example.json) 创建本地配置，使用已有 Wrangler 登录；本地账号配置与凭据不进入仓库。免费额度以 [Workers](https://developers.cloudflare.com/workers/platform/pricing/) 和 [KV](https://developers.cloudflare.com/kv/platform/pricing/) 的平台说明为准。
 
 默认商品目录由 Core 的 `catalog::DEFAULT_PRODUCTS` 定义，覆盖已核实的 GR III／IV 版本、独立套餐及会员卡。快照按编号合并默认目录与用户记录，已保存的名称、监控选择和检查记录优先；读取目录不联网、不入库、不启动监控。默认目录中尚未验证的商品经 `set_product_enabled` 首次启用时复用商品验证与保存流程，失败时保持未启用。前端通过右侧“添加监控／取消”操作提交选择，取消保留目录条目。
 

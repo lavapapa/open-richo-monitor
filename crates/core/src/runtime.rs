@@ -91,10 +91,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_config_starts_with_system_proxy_enabled() {
+    fn default_config_starts_direct_and_system_proxy_is_optional() {
+        assert!(!MonitorConfig::default().use_system_proxy);
         assert!(RicohSchedulerClient::new(&MonitorConfig::default()).is_ok());
         let mut config = MonitorConfig::default();
-        config.use_system_proxy = false;
+        config.use_system_proxy = true;
         assert!(RicohSchedulerClient::new(&config).is_ok());
     }
 }

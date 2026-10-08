@@ -1,0 +1,7 @@
+{
+  "name": "richomonitor-feedback",
+  "main": "worker.mjs",
+  "compatibility_date": "2026-10-08",
+  "workers_dev": true,
+  "kv_namespaces": [{ "binding": "FEEDBACK", "id": "填入专用的 KV namespace ID" }]
+}
