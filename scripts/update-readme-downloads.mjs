@@ -13,12 +13,17 @@ export function downloads(version) {
 <!-- downloads:end -->`;
 }
 
+export function updateReadme(current, version) {
+  if (!current.includes('<!-- downloads:start -->')) throw new Error('README 缺少下载表格标记。');
+  const table = downloads(version).replaceAll('\n', current.includes('\r\n') ? '\r\n' : '\n');
+  return current.replace(/<!-- downloads:start -->[\s\S]*?<!-- downloads:end -->/, table);
+}
+
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const readme = new URL('../README.md', import.meta.url);
   const version = JSON.parse(readFileSync(new URL('../apps/desktop/src-tauri/tauri.conf.json', import.meta.url))).version;
   const current = readFileSync(readme, 'utf8');
-  const output = current.replace(/<!-- downloads:start -->[\s\S]*?<!-- downloads:end -->/, downloads(version));
-  if (!current.includes('<!-- downloads:start -->')) throw new Error('README 缺少下载表格标记。');
+  const output = updateReadme(current, version);
   if (process.argv.includes('--check')) {
     if (output !== current) throw new Error('下载链接版本未同步，请运行 node scripts/update-readme-downloads.mjs。');
   } else writeFileSync(readme, output);
