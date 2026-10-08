@@ -858,7 +858,8 @@ mod tests {
         command.env("SystemRoot", "fixture-system");
         isolate_proxy_environment(&mut command);
         let variables = command.as_std().get_envs().collect::<BTreeMap<_, _>>();
-        assert_eq!(variables.len(), 9);
+        // Windows 环境变量名不区分大小写，大小写两次设置对应同一个变量。
+        assert_eq!(variables.len(), if cfg!(windows) { 5 } else { 9 });
         assert_eq!(
             variables[std::ffi::OsStr::new("SystemRoot")],
             Some(std::ffi::OsStr::new("fixture-system"))
