@@ -83,6 +83,7 @@ impl Storage {
     ) -> Result<bool, StorageError> {
         let key = detail.product_id.to_string();
         let tx = self.conn.transaction()?;
+        let previous = super::configuration_notifications::monitored_products(&tx)?;
         let epoch: u64 = tx.query_row(
             "SELECT revision FROM catalog_lifecycle WHERE id=1",
             [],
@@ -131,6 +132,7 @@ impl Storage {
         if enable {
             super::advance_product_round(&tx, &key)?;
         }
+        super::configuration_notifications::notify_product_changes(&tx, &previous)?;
         tx.commit()?;
         Ok(true)
     }

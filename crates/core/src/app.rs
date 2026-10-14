@@ -1,4 +1,6 @@
 //! Desktop 与命令行共用的业务边界。
+mod usage_statistics;
+
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     fmt,
@@ -222,6 +224,7 @@ pub enum ChannelEvent {
     StockAvailable,
     MonitoringFailed,
     Recovered,
+    ConfigurationChanged,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -450,8 +453,13 @@ pub struct ProductScan {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSnapshot {
+    pub usage_statistics_enabled: bool,
+    pub usage_statistics_choice_recorded: bool,
+    pub usage_statistics_intro_pending: bool,
     pub setup_completed: bool,
+    pub configuration_change_intro_pending: bool,
     pub system_notifications_enabled: bool,
+    pub system_configuration_change_notifications_enabled: bool,
     pub system_notification_delivery: Option<ChannelDelivery>,
     pub runtime: RuntimeSnapshot,
     pub config: AppConfig,
@@ -525,6 +533,7 @@ impl fmt::Display for AppError {
 impl std::error::Error for AppError {}
 #[derive(Clone)]
 pub struct MonitorApp {
+    usage_statistics: usage_statistics::UsageStatistics,
     data_dir: PathBuf,
     storage: Arc<Mutex<Storage>>,
     snapshots: broadcast::Sender<AppSnapshot>,
@@ -596,6 +605,7 @@ impl MonitorApp {
         }
         let storage = Storage::open(data_dir.join("monitor.sqlite3"))?;
         let config = storage.monitor_config()?;
+        let usage_statistics = usage_statistics::UsageStatistics::new(storage.usage_statistics_identity()?);
         let request_gate = Arc::new(RequestGate::new(
             &config.requests,
             config.scan.interval,
@@ -606,6 +616,7 @@ impl MonitorApp {
         let (snapshots, _) = broadcast::channel(SNAPSHOT_CAPACITY);
         let (scan_epoch, _) = watch::channel(0);
         Ok(Self {
+            usage_statistics,
             data_dir: data_dir.to_path_buf(),
             storage: Arc::new(Mutex::new(storage)),
             snapshots,
@@ -686,6 +697,17 @@ impl MonitorApp {
         self.channel_notification_wake.notify_one();
         self.system_notification_wake.notify_one();
         self.wake_prominent_alerts();
+    }
+
+    async fn wake_configuration_notifications(&self) -> Result<(), AppError> {
+        if self
+            .call(|db| db.has_pending_configuration_notifications())
+            .await?
+        {
+            self.channel_notification_wake.notify_one();
+            self.system_notification_wake.notify_one();
+        }
+        Ok(())
     }
 
     pub async fn query_messages(&self, query: MessageQuery) -> Result<MessagePage, AppError> {
@@ -855,6 +877,7 @@ impl MonitorApp {
                 crate::storage::MonitorEventKind::MonitoringFailed => "monitoring_failed",
                 crate::storage::MonitorEventKind::StockIncreased => "stock_increased",
                 crate::storage::MonitorEventKind::Recovered => "recovered",
+                crate::storage::MonitorEventKind::ConfigurationChanged => "configuration_changed",
             };
             let event = RecentEvent {
                 id: job.event.id,
@@ -945,6 +968,7 @@ impl MonitorApp {
             Ok(())
         })
         .await?;
+        self.wake_configuration_notifications().await?;
         self.snapshot().await?;
         Ok(())
     }
@@ -1451,6 +1475,9 @@ impl MonitorApp {
                             crate::storage::MonitorEventKind::Recovered => {
                                 ("recovered", "监控恢复")
                             }
+                            crate::storage::MonitorEventKind::ConfigurationChanged => {
+                                ("configuration_changed", "配置变更")
+                            }
                         };
                         RecentEvent {
                             id: event.id,
@@ -1644,8 +1671,13 @@ impl MonitorApp {
                     intent == RunIntent::Running && setup_completed && !in_schedule;
                 Ok((
                     AppSnapshot {
+                        usage_statistics_enabled: db.usage_statistics_identity()?.is_some(),
+                        usage_statistics_choice_recorded: db.usage_statistics_choice_recorded()?,
+                        usage_statistics_intro_pending: db.usage_statistics_intro_pending()?,
                         setup_completed,
+                        configuration_change_intro_pending: db.configuration_change_intro_pending()?,
                         system_notifications_enabled,
+                        system_configuration_change_notifications_enabled: db.system_configuration_change_notifications_enabled()?,
                         system_notification_delivery,
                         runtime: RuntimeSnapshot {
                             state: match (intent, setup_completed) {
@@ -1765,6 +1797,7 @@ impl MonitorApp {
         }
         drop(scan);
         self.request_gate.reconfigure(scan_interval);
+        self.wake_configuration_notifications().await?;
         self.snapshot().await?;
         Ok(())
     }
@@ -1776,6 +1809,19 @@ impl MonitorApp {
             db.save_monitor_config(&config)
         })
         .await?;
+        self.wake_configuration_notifications().await?;
+        self.snapshot().await?;
+        Ok(())
+    }
+
+    pub async fn complete_configuration_change_intro(&self, enabled: bool) -> Result<(), AppError> {
+        self.call(move |db| db.complete_configuration_change_intro(enabled)).await?;
+        self.snapshot().await?;
+        Ok(())
+    }
+
+    pub async fn set_system_configuration_change_notifications_enabled(&self, enabled: bool) -> Result<(), AppError> {
+        self.call(move |db| db.set_system_configuration_change_notifications_enabled(enabled)).await?;
         self.snapshot().await?;
         Ok(())
     }
@@ -1794,6 +1840,7 @@ impl MonitorApp {
             db.save_monitor_config(&config)
         })
         .await?;
+        self.wake_configuration_notifications().await?;
         self.snapshot().await?;
         Ok(())
     }
@@ -1930,6 +1977,7 @@ impl MonitorApp {
         .await?
         .then_some(())
         .ok_or_else(|| AppError::InvalidInput("商品选择已经改变，请重新添加".into()))?;
+        self.wake_configuration_notifications().await?;
         self.snapshot()
             .await?
             .products
@@ -1975,6 +2023,7 @@ impl MonitorApp {
             Ok(())
         })
         .await?;
+        self.wake_configuration_notifications().await?;
         self.snapshot().await?;
         Ok(())
     }
@@ -1996,6 +2045,7 @@ impl MonitorApp {
             Ok(())
         })
         .await?;
+        self.wake_configuration_notifications().await?;
         self.snapshot().await?;
         Ok(())
     }
@@ -2572,6 +2622,40 @@ impl MonitorApp {
             .ok_or_else(|| AppError::NotFound("通知渠道不存在".into()))
     }
 
+    pub async fn notification_test_message(&self) -> Result<String, AppError> {
+        self.call(|db| {
+            let config = AppConfig::from_monitor(db.monitor_config()?);
+            let products = db.product_configs()?.into_iter()
+                .filter(|product| product.enabled)
+                .map(|product| product.name).collect::<Vec<_>>();
+            let weekdays = config.schedule.days.iter().map(|day| match day {
+                Weekday::Mon => "星期一",
+                Weekday::Tue => "星期二",
+                Weekday::Wed => "星期三",
+                Weekday::Thu => "星期四",
+                Weekday::Fri => "星期五",
+                Weekday::Sat => "星期六",
+                Weekday::Sun => "星期日",
+            }).collect::<Vec<_>>().join("、");
+            let schedule = if config.schedule.start == config.schedule.end {
+                "全天".into()
+            } else {
+                format!("{}–{}{}", config.schedule.start,
+                    if config.schedule.end < config.schedule.start { "次日 " } else { "" },
+                    config.schedule.end)
+            };
+            let min = config.rate.interval_min_ms as f64 / 1000.0;
+            let max = config.rate.interval_max_ms as f64 / 1000.0;
+            let interval = if min == max {
+                format!("{min}秒")
+            } else {
+                format!("随机{min}～{max}秒")
+            };
+            Ok(format!("【测试消息】\n监控产品：{}\n日期：{weekdays}\n时间：{schedule}\n时间间隔：{interval}",
+                if products.is_empty() { "无".into() } else { products.join("、") }))
+        }).await
+    }
+
     pub async fn test_channel(&self, id: &str) -> Result<ChannelTest, AppError> {
         let generation = self.notification_runtime.account_generation(id);
         if !self
@@ -2628,13 +2712,14 @@ impl MonitorApp {
             Err("请填写通知渠道凭据".to_owned())
         };
         if readiness.is_ok() {
+            let message = self.notification_test_message().await?;
             for target in targets {
                 let result = self
                     .notification_runtime
                     .send_at_generation(
                         id,
                         &target,
-                        "理光相机库存监控测试消息",
+                        &message,
                         generation,
                         || Ok(true),
                     )
@@ -3105,6 +3190,7 @@ impl MonitorApp {
         })
         .await?;
         *scan = None;
+        self.usage_statistics.disable();
         self.scan_epoch.send_modify(|epoch| *epoch += 1);
         drop(scan);
         self.request_gate.reconfigure(scan_interval);
@@ -3534,6 +3620,7 @@ impl MonitorApp {
     }
 
     pub async fn monitoring_action(&self, action: MonitoringAction) -> Result<(), AppError> {
+        let previous_intent = self.call(|db| db.run_intent()).await?;
         let intent = match action {
             MonitoringAction::Start | MonitoringAction::Resume | MonitoringAction::Restart => {
                 RunIntent::Running
@@ -3558,6 +3645,9 @@ impl MonitorApp {
             Ok(())
         })
         .await?;
+        if intent == RunIntent::Running && (previous_intent != intent || action == MonitoringAction::Restart) {
+            self.usage_statistics.monitoring_started();
+        }
         self.snapshot().await?;
         Ok(())
     }
@@ -3573,6 +3663,9 @@ impl MonitorApp {
             Ok(())
         })
         .await?;
+        if self.call(|db| db.run_intent()).await? == RunIntent::Running {
+            self.usage_statistics.monitoring_started();
+        }
         self.snapshot().await?;
         Ok(())
     }
@@ -3588,6 +3681,10 @@ impl MonitorApp {
             std::fs::TryLockError::Error(error) => AppError::Storage(error.to_string()),
         })?;
         let mut scan_tasks = tokio::task::JoinSet::new();
+        let usage_worker = tokio::spawn({
+            let app = self.clone();
+            async move { app.usage_statistics_loop().await }
+        });
         let image_worker = tokio::spawn({
             let app = self.clone();
             async move { app.image_cache_loop().await }
@@ -3608,6 +3705,8 @@ impl MonitorApp {
         while scan_tasks.join_next().await.is_some() {}
         image_worker.abort();
         let _ = image_worker.await;
+        usage_worker.abort();
+        let _ = usage_worker.await;
         self.shutdown_notification_runtime().await;
         self.settle_monitoring_time(true).await?;
         drop(lock_file);
@@ -3667,6 +3766,7 @@ impl MonitorApp {
             crate::storage::MonitorEventKind::MonitoringFailed => "monitoring_failed",
             crate::storage::MonitorEventKind::StockIncreased => "stock_available",
             crate::storage::MonitorEventKind::Recovered => "recovered",
+            crate::storage::MonitorEventKind::ConfigurationChanged => "configuration_changed",
         };
         let result = self
             .send_event(NotificationJob {
@@ -4251,6 +4351,12 @@ impl MonitorApp {
         &self,
         event: &crate::storage::ListingEvent,
     ) -> Result<String, AppError> {
+        if let Some(text) = &event.notification_details.configuration_change {
+            return Ok(format!(
+                "{text}\n{}",
+                notification_timestamp(event.observed_at_ms)
+            ));
+        }
         let key = event.product.key.clone();
         let product = self
             .call(move |db| {
@@ -4275,11 +4381,11 @@ impl MonitorApp {
                     && event.notification_details.previous_is_show == Some(1)
                     && event.stock > 0.0;
             let label = if product.as_ref().is_some_and(|p| p.prominent_alert) {
-                "【⚠️⚠️⚠️立即抢购⚠️⚠️⚠️】"
+                "⚠️⚠️⚠️立即抢购⚠️⚠️⚠️"
             } else if restock {
-                "【⚠️补货⚠️】"
+                "⚠️补货⚠️"
             } else {
-                "【⚠️上架⚠️】"
+                "⚠️上架⚠️"
             };
             let change = event.notification_details.previous_stock.map_or_else(
                 || {
@@ -4303,9 +4409,8 @@ impl MonitorApp {
                 },
             );
             return Ok(format!(
-                "{label}{name}\n商品 ID：{}\n{change}\n发生时间：{}（北京时间）",
-                event.product.product_id,
-                format_timestamp(event.observed_at_ms)
+                "{label}{name}\n{change}\n{}",
+                notification_timestamp(event.observed_at_ms)
             ));
         }
         let label = match event.kind {
@@ -4315,19 +4420,17 @@ impl MonitorApp {
         };
         if let Some(failure) = &event.notification_details.failure {
             return Ok(format!(
-                "{label}{name}\n商品 ID：{}\n失败原因：{}\n连续失败：{} 次\n持续时间：{} 分钟 {} 秒（有效监控时间）\n记录库存：{}\n发生时间：{}（北京时间）",
-                event.product.product_id,
+                "{label}{name}\n失败原因：{}\n连续失败：{} 次\n持续时间：{} 分钟 {} 秒（有效监控时间）\n记录库存：{}\n{}",
                 failure.reason.as_deref().unwrap_or("未提供具体原因"),
                 failure.count, failure.active_duration_ms / 60_000,
                 failure.active_duration_ms / 1000 % 60, event.stock,
-                format_timestamp(event.observed_at_ms)
+                notification_timestamp(event.observed_at_ms)
             ));
         }
         Ok(format!(
-            "{label}{name}\n商品 ID：{}\n记录库存：{}\n发生时间：{}（北京时间）",
-            event.product.product_id,
+            "{label}{name}\n记录库存：{}\n{}",
             event.stock,
-            format_timestamp(event.observed_at_ms)
+            notification_timestamp(event.observed_at_ms)
         ))
     }
 
@@ -4521,6 +4624,22 @@ fn format_timestamp(ms: i64) -> String {
         .unwrap_or_default()
 }
 
+fn notification_timestamp(ms: i64) -> String {
+    let at = time::OffsetDateTime::from_unix_timestamp_nanos(i128::from(ms) * 1_000_000)
+        .expect("通知时间有效")
+        .to_offset(time::UtcOffset::from_hms(8, 0, 0).expect("UTC+8"));
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03}",
+        at.year(),
+        at.month() as u8,
+        at.day(),
+        at.hour(),
+        at.minute(),
+        at.second(),
+        at.millisecond()
+    )
+}
+
 fn parse_beijing_date(value: &str) -> Result<time::Date, AppError> {
     let parts = value.split('-').collect::<Vec<_>>();
     let invalid = || AppError::InvalidInput("日期应为 YYYY-MM-DD".into());
@@ -4692,6 +4811,7 @@ fn channel_event(event: &str) -> Option<ChannelEvent> {
         "stock_available" => Some(ChannelEvent::StockAvailable),
         "monitoring_failed" => Some(ChannelEvent::MonitoringFailed),
         "recovered" => Some(ChannelEvent::Recovered),
+        "configuration_changed" => Some(ChannelEvent::ConfigurationChanged),
         _ => None,
     }
 }
@@ -4700,6 +4820,7 @@ fn channel_event_name(event: &ChannelEvent) -> String {
         ChannelEvent::StockAvailable => "stock_available",
         ChannelEvent::MonitoringFailed => "monitoring_failed",
         ChannelEvent::Recovered => "recovered",
+        ChannelEvent::ConfigurationChanged => "configuration_changed",
     }
     .into()
 }
@@ -4817,6 +4938,37 @@ mod tests {
         let mut config = super::AppConfig::default();
         config.monitoring_mode = crate::config::MonitoringMode::ProductDetail;
         config
+    }
+
+    #[tokio::test]
+    async fn test_message_uses_current_products_plan_and_wait_range() {
+        let directory = std::env::temp_dir().join(format!("ricoh-test-message-{}-{}", std::process::id(), now_ms()));
+        let app = MonitorApp::open(&directory).unwrap();
+        app.set_onboarding_products(&[65, 130]).await.unwrap();
+        let mut config = AppConfig::default();
+        config.schedule.days = vec![Weekday::Mon, Weekday::Wed];
+        config.schedule.start = "22:00".into();
+        config.schedule.end = "02:00".into();
+        config.rate.interval_min_ms = 300;
+        config.rate.interval_max_ms = 1000;
+        app.save_config(config.clone()).await.unwrap();
+        let text = app.notification_test_message().await.unwrap();
+        assert!(text.starts_with("【测试消息】\n监控产品："));
+        assert!(text.contains("官翻品 GR IIIx"));
+        assert!(text.contains("官翻品 GR IV"));
+        assert!(text.contains("日期：星期一、星期三\n时间：22:00–次日 02:00\n时间间隔：随机0.3～1秒"));
+        app.set_product_enabled(130, false).await.unwrap();
+        assert!(!app.notification_test_message().await.unwrap().contains("官翻品 GR IV"));
+        config.schedule.end = config.schedule.start.clone();
+        config.rate.interval_min_ms = 0;
+        config.rate.interval_max_ms = 0;
+        app.save_config(config).await.unwrap();
+        app.set_product_enabled(65, false).await.unwrap();
+        let text = app.notification_test_message().await.unwrap();
+        assert!(text.contains("监控产品：无"));
+        assert!(text.contains("时间：全天\n时间间隔：0秒"));
+        drop(app);
+        std::fs::remove_dir_all(directory).unwrap();
     }
     use super::*;
     use std::{
@@ -5358,7 +5510,15 @@ mod tests {
             .await
             .unwrap();
         let text = app.notification_text(&event).await.unwrap();
-        assert!(text.starts_with("【⚠️⚠️⚠️立即抢购⚠️⚠️⚠️】官翻品 GR IIIx"));
+        assert!(text.starts_with("⚠️⚠️⚠️立即抢购⚠️⚠️⚠️官翻品 GR IIIx"));
+        assert!(!text.contains("商品 ID"));
+        assert!(!text.contains("发生时间"));
+        assert!(!text.contains("北京时间"));
+        let at = text.lines().last().unwrap();
+        assert_eq!(at.len(), 23);
+        assert_eq!(&at[10..11], " ");
+        assert!(!at.contains('T'));
+        assert!(!at.contains('+'));
         let (_, system) = app.claim_system_notification().await.unwrap().unwrap();
         assert_eq!(system.message, text);
         let image_root = directory.join("images");
@@ -5439,7 +5599,7 @@ mod tests {
             .notification_text(&event)
             .await
             .unwrap()
-            .starts_with("【⚠️上架⚠️】官翻品 GR IIIx"));
+            .starts_with("⚠️上架⚠️官翻品 GR IIIx"));
         drop(app);
         std::fs::remove_dir_all(directory).unwrap();
     }
@@ -5509,16 +5669,16 @@ mod tests {
         assert_eq!(system.id, event.id);
         assert!(system.message.contains("官翻品 GR IIIx"));
         assert!(system.message.contains("补货：3 → 5"));
-        assert!(system.message.starts_with("【⚠️⚠️⚠️立即抢购⚠️⚠️⚠️】"));
+        assert!(system.message.starts_with("⚠️⚠️⚠️立即抢购⚠️⚠️⚠️"));
         let text = app.notification_text(&event).await.unwrap();
-        assert!(text.starts_with("【⚠️⚠️⚠️立即抢购⚠️⚠️⚠️】官翻品 GR IIIx"));
+        assert!(text.starts_with("⚠️⚠️⚠️立即抢购⚠️⚠️⚠️官翻品 GR IIIx"));
         assert!(text.contains("补货：3 → 5"));
         app.set_product_prominent_alert(65, false).await.unwrap();
         assert!(app
             .notification_text(&event)
             .await
             .unwrap()
-            .starts_with("【⚠️补货⚠️】官翻品 GR IIIx"));
+            .starts_with("⚠️补货⚠️官翻品 GR IIIx"));
         drop(app);
         std::fs::remove_dir_all(directory).unwrap();
     }
@@ -5594,13 +5754,13 @@ mod tests {
         drop(app);
         let app = MonitorApp::open(&directory).unwrap();
         let expected = [
-            ("【⚠️上架⚠️】", "记录库存：10"),
-            ("【⚠️补货⚠️】", "补货：0 → 10"),
-            ("【⚠️补货⚠️】", "补货：10 → 20"),
-            ("【⚠️上架⚠️】", "记录库存：0"),
-            ("【⚠️补货⚠️】", "补货：0 → 5"),
-            ("【⚠️上架⚠️】", "库存变化：2 → 2"),
-            ("【⚠️补货⚠️】", "补货：2 → 4"),
+            ("⚠️上架⚠️", "记录库存：10"),
+            ("⚠️补货⚠️", "补货：0 → 10"),
+            ("⚠️补货⚠️", "补货：10 → 20"),
+            ("⚠️上架⚠️", "记录库存：0"),
+            ("⚠️补货⚠️", "补货：0 → 5"),
+            ("⚠️上架⚠️", "库存变化：2 → 2"),
+            ("⚠️补货⚠️", "补货：2 → 4"),
         ];
         for (prefix, change) in expected {
             let (id, event) = app.claim_system_notification().await.unwrap().unwrap();

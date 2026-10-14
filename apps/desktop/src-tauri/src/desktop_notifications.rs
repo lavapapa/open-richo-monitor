@@ -584,21 +584,21 @@ pub(crate) async fn show(app: &AppHandle, event: &RecentEvent) -> Result<(), Str
 }
 
 #[cfg(target_os = "windows")]
-pub(crate) async fn show_test(app: &AppHandle) -> Result<(), String> {
+pub(crate) async fn show_test(app: &AppHandle, message: String) -> Result<(), String> {
     send_windows(
         app,
         "RichoMonitor · 测试消息",
-        "这是通知通道测试。请确认是否在通知中心看到此消息。".into(),
+        message,
     )
     .await
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-pub(crate) async fn show_test(app: &AppHandle) -> Result<(), String> {
+pub(crate) async fn show_test(app: &AppHandle, message: String) -> Result<(), String> {
     app.notification()
         .builder()
         .title("RichoMonitor · 测试消息")
-        .body("这是通知通道测试。请确认是否在通知中心看到此消息。")
+        .body(&message)
         .show()
         .map_err(|error| error.to_string())
 }
@@ -657,10 +657,10 @@ pub(crate) async fn show(_app: &AppHandle, event: &RecentEvent) -> Result<(), St
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) async fn show_test(_app: &AppHandle) -> Result<(), String> {
+pub(crate) async fn show_test(_app: &AppHandle, message: String) -> Result<(), String> {
     send(
         "RichoMonitor · 测试消息",
-        "这是通知通道测试。请确认是否在通知中心看到此消息。".into(),
+        message,
     )
     .await
 }

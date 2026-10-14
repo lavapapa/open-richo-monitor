@@ -42,7 +42,12 @@ import tileSource from "$lib/ProductTile.svelte?raw";
 function makeSnapshot(overrides: Partial<DesktopSnapshot> = {}): DesktopSnapshot {
   return {
     setupCompleted: true,
+    configurationChangeIntroPending: false,
     systemNotificationsEnabled: false,
+    systemConfigurationChangeNotificationsEnabled: true,
+    usageStatisticsEnabled: false,
+    usageStatisticsChoiceRecorded: false,
+    usageStatisticsIntroPending: false,
     systemNotificationDelivery: null,
     runtime: {
       state: "stopped", nextStartAt: null, lastSuccessAt: null, lastError: null,
@@ -124,6 +129,10 @@ function useOnboardingBridge() {
       return structuredClone(current.platform);
     } else if (name === "save_monitoring_config") current.config = structuredClone(args!.config);
     else if (name === "set_auto_start_monitoring") current.config!.autoStartMonitoring = args!.enabled;
+    else if (name === "set_usage_statistics_enabled") {
+      current.usageStatisticsEnabled = args!.enabled;
+      current.usageStatisticsChoiceRecorded = true;
+    }
     else if (name === "complete_setup") {
       current.setupCompleted = true;
       current.runtime!.state = current.config!.autoStartMonitoring ? "monitoring" : "stopped";
@@ -1283,17 +1292,17 @@ describe("桌面主流程", () => {
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "恭喜买到心仪的相机！" })).toBeNull());
   });
 
-  it("设置页直接填写反馈，关闭不会消费购买后的评价", async () => {
-    current.platform!.feedbackUrl = "https://github.com/lavapapa/open-richo-monitor/issues/new";
+  it("设置页显示 Tally 反馈，关闭不会消费购买后的评价", async () => {
+    current.platform!.feedbackUrl = "https://tally.so/r/9qL9ME";
     render(Page);
     await screen.findByRole("button", { name: "开始监控" });
     await fireEvent.click(screen.getByRole("button", { name: "其他设置" }));
     await fireEvent.click(screen.getByRole("button", { name: "反馈" }));
     await screen.findByRole("dialog", { name: "告诉我你的意见" });
-    expect(screen.getByRole("textbox", { name: "意见" })).toBeTruthy();
+    expect(screen.getByTitle("RichoMonitor 反馈表单")).toBeTruthy();
     bridge.purchaseHandler!();
     expect(screen.queryByRole("dialog", { name: "恭喜买到心仪的相机！" })).toBeNull();
-    await fireEvent.click(screen.getByRole("button", { name: "跳过" }));
+    await fireEvent.click(screen.getByRole("button", { name: "关闭" }));
     expect(localStorage.getItem("rm.purchase.reviewed")).toBeNull();
     await screen.findByRole("dialog", { name: "恭喜买到心仪的相机！" });
   });
@@ -1602,6 +1611,46 @@ describe("桌面主流程", () => {
     expect(current.config!.useSystemProxy).toBe(true);
     await fireEvent.click(screen.getByRole("button", { name: "代理池" }));
     expect((screen.getByRole("checkbox", { name: "使用系统代理" }) as HTMLInputElement).checked).toBe(false);
+  });
+
+  it("使用统计通过独立命令保存，关闭后停止勾选且监控配置保持原样", async () => {
+    const originalConfig = structuredClone(current.config);
+    bridge.invoke.mockImplementation(async (name: string, args?: Record<string, any>) => {
+      if (name === "get_desktop_snapshot") return structuredClone(current);
+      if (name === "set_usage_statistics_enabled") { current.usageStatisticsEnabled = args!.enabled; return { message: null }; }
+      throw new Error(`Unexpected command: ${name}`);
+    });
+    render(Page);
+    await screen.findByRole("button", { name: "开始监控" });
+    await fireEvent.click(screen.getByRole("button", { name: "其他设置" }));
+    const toggle = screen.getByRole("checkbox", { name: "分享使用统计（可选）" }) as HTMLInputElement;
+    expect(toggle.checked).toBe(false);
+    await fireEvent.click(toggle);
+    await waitFor(() => expect(current.usageStatisticsEnabled).toBe(true));
+    await waitFor(() => expect(toggle.disabled).toBe(false));
+    await fireEvent.click(toggle);
+    await waitFor(() => expect(current.usageStatisticsEnabled).toBe(false));
+    expect(current.config).toEqual(originalConfig);
+    expect(bridge.invoke).toHaveBeenCalledWith("set_usage_statistics_enabled", { enabled: false });
+  });
+
+  it("旧用户没有聊天渠道也会收到独立统计征询，拒绝后关闭", async () => {
+    current.usageStatisticsIntroPending = true;
+    bridge.invoke.mockImplementation(async (name: string, args?: Record<string, any>) => {
+      if (name === "get_desktop_snapshot") return structuredClone(current);
+      if (name === "set_usage_statistics_enabled") {
+        current.usageStatisticsEnabled = args!.enabled;
+        current.usageStatisticsIntroPending = false;
+        return { message: null };
+      }
+      throw new Error(`Unexpected command: ${name}`);
+    });
+    render(Page);
+    expect(await screen.findByRole("heading", { name: "新功能：使用统计" })).toBeTruthy();
+    await fireEvent.click(screen.getByRole("button", { name: "完成" }));
+    await waitFor(() => expect(screen.queryByRole("heading", { name: "新功能：使用统计" })).toBeNull());
+    expect(current.usageStatisticsEnabled).toBe(false);
+    expect(current.usageStatisticsIntroPending).toBe(false);
   });
 
   it("连续切换自动监控和通知代理不会回写旧设置", async () => {
@@ -1982,6 +2031,7 @@ describe("桌面主流程", () => {
     await fireEvent.click(screen.getByRole("button", { name: "通知" }));
     await fireEvent.click(screen.getByRole("button", { name: "添加飞书" }));
     await fireEvent.input(screen.getByLabelText("渠道名称"), { target: { value: "摄影值班群" } });
+    expect((screen.getByRole("checkbox", { name: /^配置变更$/ }) as HTMLInputElement).checked).toBe(true);
     await fireEvent.input(screen.getByLabelText("应用 ID"), { target: { value: "fixture-app" } });
     await fireEvent.input(screen.getByLabelText("应用密钥"), { target: { value: "fixture-secret" } });
     await fireEvent.click(screen.getByLabelText("监控异常"));
@@ -1992,7 +2042,7 @@ describe("桌面主流程", () => {
     expect(saved).toMatchObject({
       name: "摄影值班群", providerId: "feishu",
       values: { appId: "fixture-app", appSecret: "fixture-secret" },
-      subscriptions: ["stock_available", "monitoring_failed", "recovered"],
+      subscriptions: ["stock_available", "configuration_changed", "monitoring_failed", "recovered"],
     });
     expect(bridge.invoke).toHaveBeenCalledWith("test_notification_channel", { channelId: "saved-channel" });
   });
@@ -2190,6 +2240,28 @@ describe("桌面主流程", () => {
     await fireEvent.click(screen.getByRole("checkbox", { name: "测试群 群聊" }));
     expect((screen.getByRole("button", { name: "保存" }) as HTMLButtonElement).disabled).toBe(false);
     expect(screen.getByText("群聊已选择，可以保存")).toBeTruthy();
+  });
+
+  it("首次取消统计会保存关闭选择，重新进入引导仍保持关闭", async () => {
+    current = makeSnapshot({ setupCompleted: false, catalog: structuredClone(onboardingCatalog) });
+    useOnboardingBridge();
+    render(Page);
+    await screen.findByRole("heading", { name: /选择监控商品/ });
+    await fireEvent.click(screen.getByRole("button", { name: "下一步" }));
+    await screen.findByRole("heading", { name: /设置通知/ });
+    await fireEvent.click(screen.getByRole("button", { name: "跳过" }));
+    await fireEvent.click(screen.getByRole("checkbox", { name: "分享使用统计（可选）" }));
+    await fireEvent.click(screen.getByRole("button", { name: "完成" }));
+    await screen.findByRole("heading", { name: "正在监控" });
+    expect(bridge.invoke).toHaveBeenCalledWith("set_usage_statistics_enabled", { enabled: false });
+    expect(current.usageStatisticsChoiceRecorded).toBe(true);
+    await fireEvent.click(screen.getByRole("button", { name: "其他设置" }));
+    await fireEvent.click(screen.getByRole("button", { name: "帮助引导" }));
+    await screen.findByRole("heading", { name: /选择监控商品/ });
+    await fireEvent.click(screen.getByRole("button", { name: "下一步" }));
+    await screen.findByRole("heading", { name: /设置通知/ });
+    await fireEvent.click(screen.getByRole("button", { name: "跳过" }));
+    expect((screen.getByRole("checkbox", { name: "分享使用统计（可选）" }) as HTMLInputElement).checked).toBe(false);
   });
 
   it("重跑引导仅保存启动偏好，当前监控保持原样", async () => {
@@ -2660,6 +2732,41 @@ describe("桌面主流程", () => {
     await fireEvent.click(screen.getByRole("button", { name: "代理池" }));
     expect((screen.getByRole("checkbox", { name: "使用代理池" }) as HTMLInputElement).checked).toBe(false);
     expect(screen.getByRole("button", { name: "保存设置" }).hasAttribute("disabled")).toBe(true);
+  });
+
+  it.each([true, false])("旧用户配置提醒介绍选择 %s 后关闭且保留渠道启停", async (enabled) => {
+    current.configurationChangeIntroPending = true;
+    current.channels = [{ ...channel, enabled: false }, { ...channel, id: "other", enabled: true }];
+    bridge.invoke.mockImplementation(async (name: string, args?: Record<string, any>) => {
+      if (name === "get_desktop_snapshot") return structuredClone(current);
+      if (name === "query_messages") return messagePage(args!.query!);
+      if (name === "complete_configuration_change_intro") {
+        current.configurationChangeIntroPending = false;
+        for (const item of current.channels) {
+          item.subscriptions = item.subscriptions.filter((event) => event !== "configuration_changed");
+          if (args!.enabled) item.subscriptions.push("configuration_changed");
+        }
+        current.systemConfigurationChangeNotificationsEnabled = args!.enabled;
+        return { message: null };
+      }
+      throw new Error(`Unexpected command: ${name}`);
+    });
+    render(Page);
+    await screen.findByRole("dialog", { name: "新功能：配置变更提醒" });
+    if (enabled) await fireEvent.click(screen.getByRole("checkbox", { name: "启用配置变更提醒" }));
+    await fireEvent.click(screen.getByRole("button", { name: "完成" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "新功能：配置变更提醒" })).toBeNull());
+    expect(bridge.invoke).toHaveBeenCalledWith("complete_configuration_change_intro", { enabled });
+    expect(current.channels.map((item) => item.enabled)).toEqual([false, true]);
+    expect(current.channels.every((item) => item.subscriptions.includes("configuration_changed") === enabled)).toBe(true);
+  });
+
+  it.each(["新用户", "无渠道"])("%s不显示配置提醒升级介绍", async (kind) => {
+    current.configurationChangeIntroPending = kind === "无渠道";
+    current.channels = kind === "无渠道" ? [] : [{ ...channel }];
+    render(Page);
+    await screen.findByRole("button", { name: "开始监控" });
+    expect(screen.queryByRole("dialog", { name: "新功能：配置变更提醒" })).toBeNull();
   });
 
   it.each(["取消", "失败"])("导入%s保留未保存的速率草稿", async (outcome) => {

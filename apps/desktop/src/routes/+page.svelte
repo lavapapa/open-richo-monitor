@@ -24,6 +24,10 @@
   import UpdateNotice from "$lib/UpdateNotice.svelte";
   import SupportFlow from "$lib/SupportFlow.svelte";
   import SupportButton from "$lib/SupportButton.svelte";
+  import UpgradeFlow from "$lib/UpgradeFlow.svelte";
+  import { pendingUpgradeItems } from "$lib/upgrade-items";
+  let upgradeDismissed = false;
+  import UsageStatisticsConsent from "$lib/UsageStatisticsConsent.svelte";
   import support from "$lib/support.json";
   import ScheduleFields from "$lib/ScheduleFields.svelte";
   import RateFields from "$lib/RateFields.svelte";
@@ -89,6 +93,7 @@
     { id: "stock_available", label: "商品上架或补货" },
     { id: "monitoring_failed", label: "监控异常" },
     { id: "recovered", label: "监控恢复" },
+    { id: "configuration_changed", label: "配置变更" },
   ];
   const days: { id: Weekday; label: string }[] = [
     { id: "mon", label: "一" }, { id: "tue", label: "二" }, { id: "wed", label: "三" },
@@ -147,7 +152,7 @@
   let channelName = "";
   let providerId = "";
   let channelValues: Record<string, string> = {};
-  let channelEvents: ChannelEvent[] = ["stock_available"];
+  let channelEvents: ChannelEvent[] = ["stock_available", "configuration_changed"];
   let channelMode: "binding" | "manual" = "binding";
   let channelBinding: BindingSession | null = null;
   let channelTargetId = "";
@@ -711,7 +716,7 @@
     channelTargetId = existing?.targetId ?? "";
     channelTargetKind = existing?.targetKind ?? "chat";
     channelSelectedTargets = (existing?.selectedTargets ?? []).map((target) => ({ ...target }));
-    channelEvents = existing?.subscriptions ?? ["stock_available"];
+    channelEvents = existing?.subscriptions ?? ["stock_available", "configuration_changed"];
     await tick();
     channelDialog?.showModal();
     channelDialog?.querySelector<HTMLButtonElement>("button[aria-label='关闭']")?.focus();
@@ -951,7 +956,7 @@
     }, "系统通知已启用。");
   }
 
-  async function finishSetup(loginStart: boolean, autoStartMonitoring: boolean) {
+  async function finishSetup(loginStart: boolean, autoStartMonitoring: boolean, usageStatistics: boolean) {
     if (!activeProducts.length) {
       notice = { kind: "error", text: "请先添加至少一个监控商品。" };
       return;
@@ -961,6 +966,7 @@
       if (firstSetup) await desktopApi.saveMonitoringConfig({ ...config, autoStartMonitoring, schedule: { days: days.map((day) => day.id), start: "00:00", end: "00:00" } });
       else if (autoStartMonitoring !== snapshot?.config?.autoStartMonitoring) await desktopApi.setAutoStartMonitoring(autoStartMonitoring);
       if (loginStart !== (snapshot?.platform?.loginStartEnabled ?? false)) await desktopApi.setLoginStart(loginStart);
+      if (!snapshot?.usageStatisticsChoiceRecorded || usageStatistics !== snapshot.usageStatisticsEnabled || snapshot.usageStatisticsIntroPending) await desktopApi.setUsageStatisticsEnabled(usageStatistics);
       if (firstSetup) await desktopApi.completeSetup();
     }, desktopApi.previewMode ? "引导已完成，当前为网页演示。" : firstSetup && autoStartMonitoring ? "监控已开始。" : "设置已完成。");
     if (ready) navigate("status");
@@ -1124,6 +1130,7 @@
             <button class="secondary" disabled={busy} on:click={() => checkNotificationPermission()}>检查权限</button>
             <button class="secondary" disabled={busy} on:click={sendSystemTest}>发送测试</button>
           </div>
+          <label class="system-config-scope"><input aria-label="配置变更系统通知" type="checkbox" disabled={pendingToggles.has("system-config-scope")} checked={snapshot?.systemConfigurationChangeNotificationsEnabled ?? false} on:change={(event) => saveToggle("system-config-scope", event.currentTarget, snapshot?.systemConfigurationChangeNotificationsEnabled ?? false, (enabled) => desktopApi.setSystemConfigurationChangeNotificationsEnabled(enabled))} />配置变更</label>
           {#if snapshot?.platform?.notificationPermission === "denied" && !snapshot.systemNotificationsEnabled}<p class="quiet">请在系统设置中开启本应用通知，返回后点击“检查权限”。</p>{/if}
           {#if snapshot?.systemNotificationDelivery}
             <p class="muted">最近系统通知：{snapshot.systemNotificationDelivery.outcome === "accepted" ? "已提交" : snapshot.systemNotificationDelivery.outcome === "unknown" ? "尚未确认送达" : "发送失败"} · {snapshot.systemNotificationDelivery.message}</p>
@@ -1245,12 +1252,13 @@
         </section>
         {#if snapshot?.platform && (snapshot.platform.projectUrl || snapshot.platform.tutorialUrl || snapshot.platform.feedbackUrl)}<section class="group settings-group"><h2>相关链接</h2>{#each [{ key: "projectUrl", label: "项目主页" }, { key: "tutorialUrl", label: "使用教程" }, { key: "feedbackUrl", label: "反馈" }] as item}{#if snapshot.platform[item.key as keyof typeof snapshot.platform]}<button class="link-row" on:click={() => { if (item.key === "feedbackUrl") { supportStep = "feedback"; supportOpen = true; } else void openAppLink(item.key as "projectUrl" | "tutorialUrl"); }}>{item.label} {#if item.key !== "feedbackUrl"}<span aria-hidden="true">↗</span>{/if}</button>{/if}{/each}</section>{/if}
         <section class="group settings-group"><h2>数据与诊断</h2>
+          <UsageStatisticsConsent enabled={snapshot?.usageStatisticsEnabled ?? false} {busy} onChange={(enabled) => { void run(() => desktopApi.setUsageStatisticsEnabled(enabled)); }} />
           <div class="settings-row"><div><strong>配置文件</strong><p>导入会合并商品和通知渠道，并按文件更新监控设置；导入后监控停止。导出不含通知凭据，导入渠道需重新测试后启用。</p></div><div class="actions"><button class="secondary" disabled={busy} on:click={() => run(async () => { if (await desktopApi.exportConfigurationFile()) notice = { kind: "success", text: "配置已导出。" }; })}>导出配置…</button><button class="secondary" disabled={busy} on:click={importConfigFile}>导入配置…</button></div></div>
           <div class="settings-row"><div><strong>诊断报告</strong><p>生成当前运行信息以便排查问题。</p></div><button class="secondary" on:click={() => run(async () => { diagnostic = await desktopApi.createDiagnosticPreview(); })}>生成预览</button></div>
           {#if diagnostic}<div class="diagnostic-preview"><textarea readonly rows="8" bind:value={diagnostic}></textarea><button class="secondary" on:click={() => run(() => desktopApi.saveDiagnosticReport(diagnostic))}>保存报告</button></div>{/if}
         </section>
         <section class="group settings-group"><h2>恢复</h2><div class="settings-row"><div><strong>恢复默认设置</strong><p>移除已添加的商品、渠道和代理。</p></div>{#if !resetOpen}<button class="danger-button" on:click={() => resetOpen = true}>恢复默认设置…</button>{/if}</div>{#if resetOpen}<div class="reset-confirm"><label><input type="checkbox" bind:checked={clearHistory} />同时删除历史记录</label><div class="actions"><button class="secondary" on:click={() => resetOpen = false}>取消</button><button class="danger-button" disabled={busy} on:click={restoreDefaults}>确认恢复</button></div></div>{/if}</section>
-        {#if support.fundingUrl}<div class="settings-support"><SupportButton url={support.fundingUrl} /></div>{/if}
+        <div class="settings-support"><SupportButton url={support.fundingUrl} /></div>
       </section>
     {/if}
       {#if channelFormOpen}
@@ -1306,11 +1314,13 @@
     </dialog>{/if}
   </main>
 </div>
-{#if supportOpen}{#key supportStep}<SupportFlow initialStep={supportStep} onClose={closeSupport} />{/key}{/if}
+{#if supportOpen}{#key supportStep}<SupportFlow initialStep={supportStep} {appVersion} onClose={closeSupport} />{/key}{/if}
+{#if snapshot && page !== "setup" && !upgradeDismissed && pendingUpgradeItems(snapshot).length}<UpgradeFlow {snapshot} onDone={refresh} onDismiss={() => upgradeDismissed = true} />{/if}
 {#if previewAlertOpen}<div class="preview-alert" role="dialog" aria-label="突出提醒测试"><iframe title="突出提醒演示" src="/prominent-alert"></iframe><button class="preview-alert-close" aria-label="关闭突出提醒测试" on:click={() => previewAlertOpen = false}><X size={18} /></button></div>{/if}
 
 <style>
   .settings-support { display: flex; justify-content: center; padding: 24px 0 8px; }
+  .system-config-scope { display: inline-flex; align-items: center; gap: 6px; margin-top: 12px; font-size: 13px; }
   :global(*) { box-sizing: border-box; }
   :global(body) { margin: 0; color: var(--foreground); background: var(--canvas); font: 15px/1.45 -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif; -webkit-font-smoothing: antialiased; font-variant-numeric: tabular-nums; }
   :global(::selection) { color: #fff; background: #a2252d; }

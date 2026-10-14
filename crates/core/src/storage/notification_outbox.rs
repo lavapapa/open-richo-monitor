@@ -63,6 +63,7 @@ fn subscription(event: &ListingEvent) -> &'static str {
         | super::MonitorEventKind::StockIncreased => "stock_available",
         super::MonitorEventKind::MonitoringFailed => "monitoring_failed",
         super::MonitorEventKind::Recovered => "recovered",
+        super::MonitorEventKind::ConfigurationChanged => "configuration_changed",
     }
 }
 
@@ -71,6 +72,7 @@ fn subscription_from_db(kind: &str) -> &'static str {
         "first_observed_in_stock" | "out_of_stock_to_in_stock" => "stock_available",
         "monitoring_failed" => "monitoring_failed",
         "recovered" => "recovered",
+        "configuration_changed" => "configuration_changed",
         _ => "stock_available",
     }
 }
@@ -137,8 +139,8 @@ pub(super) fn enqueue_event(conn: &Connection, event: &ListingEvent) -> Result<(
         }
     }
     if conn.query_row(
-        "SELECT system_notifications_enabled FROM settings WHERE id=1",
-        [],
+        "SELECT system_notifications_enabled AND (?1!='configuration_changed' OR system_configuration_change_notifications_enabled) FROM settings WHERE id=1",
+        [subscription(event)],
         |row| row.get::<_, bool>(0),
     )? {
         channels.push((SYSTEM_CHANNEL.into(), SYSTEM_CHANNEL.into()));
@@ -281,6 +283,9 @@ fn job_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<OutboxJob> {
 }
 
 impl Storage {
+    pub(crate) fn has_pending_configuration_notifications(&self) -> Result<bool, StorageError> {
+        Ok(self.conn.query_row("SELECT EXISTS(SELECT 1 FROM pending_configuration_change) OR EXISTS(SELECT 1 FROM notification_outbox WHERE event_kind='configuration_changed' AND status='pending')", [], |row| row.get(0))?)
+    }
     /// 运行锁的新拥有者将上次未确认的投递结为未知，释放路由顺序占位。
     pub(crate) fn recover_channel_notifications(
         &mut self,
@@ -396,10 +401,17 @@ impl Storage {
             }
             job.waited_for_connection = self.conn.query_row(
                 "SELECT error='等待连接恢复' FROM notification_outbox WHERE id=?1",
-                [job.id], |row| Ok(row.get::<_, Option<bool>>(0)?.unwrap_or(false)),
+                [job.id],
+                |row| Ok(row.get::<_, Option<bool>>(0)?.unwrap_or(false)),
             )?;
-            if ready_accounts.is_some() && (!self.notification_event_is_enabled(&job.channel_id, subscription(&job.event), &job.event.product.key, Some(job.generation))?
-                || (job.waited_for_connection && !self.waiting_notification_is_current(&job.event, now_ms)?))
+            if ready_accounts.is_some()
+                && (!self.notification_event_is_enabled(
+                    &job.channel_id,
+                    subscription(&job.event),
+                    &job.event.product.key,
+                    Some(job.generation),
+                )? || (job.waited_for_connection
+                    && !self.waiting_notification_is_current(&job.event, now_ms)?))
             {
                 self.finish_notification(job.id, "skipped", "事件已过期或通知范围已取消", now_ms)?;
                 continue;
@@ -408,11 +420,21 @@ impl Storage {
         }
     }
 
-    pub fn waiting_notification_is_current(&self, event: &ListingEvent, now_ms: i64) -> Result<bool, StorageError> {
-        if subscription(event) != "stock_available" { return Ok(true); }
-        if event.observed_at_ms < now_ms.saturating_sub(PROMINENT_MAX_AGE_MS) { return Ok(false); }
-        Ok(self.observation(&event.product.key)?.is_some_and(|latest|
-            latest.state.is_show == 1 && (event.stock == 0.0 || latest.state.stock.is_some_and(|stock| stock > 0.0))))
+    pub fn waiting_notification_is_current(
+        &self,
+        event: &ListingEvent,
+        now_ms: i64,
+    ) -> Result<bool, StorageError> {
+        if subscription(event) != "stock_available" {
+            return Ok(true);
+        }
+        if event.observed_at_ms < now_ms.saturating_sub(PROMINENT_MAX_AGE_MS) {
+            return Ok(false);
+        }
+        Ok(self.observation(&event.product.key)?.is_some_and(|latest| {
+            latest.state.is_show == 1
+                && (event.stock == 0.0 || latest.state.stock.is_some_and(|stock| stock > 0.0))
+        }))
     }
 
     pub fn claim_system_notification(
@@ -427,8 +449,10 @@ impl Storage {
                 .into_iter()
                 .any(|product| product.identity.key == job.event.product.key && product.enabled);
             if !self.system_notifications_enabled()?
-                || !product_enabled
-                || self.product_generation(&job.event.product.key)? != job.generation
+                || (job.event.kind == super::MonitorEventKind::ConfigurationChanged && !self.system_configuration_change_notifications_enabled()?)
+                || (job.event.kind != super::MonitorEventKind::ConfigurationChanged
+                    && (!product_enabled
+                        || self.product_generation(&job.event.product.key)? != job.generation))
             {
                 self.finish_notification(job.id, "skipped", "", now_ms)?;
                 continue;
@@ -444,7 +468,9 @@ impl Storage {
         ready_accounts: Option<&[String]>,
     ) -> Result<Option<OutboxJob>, StorageError> {
         let tx = self.conn.transaction()?;
-        let ready_json = ready_accounts.map(|accounts| serde_json::to_string(accounts).expect("字符串数组可序列化"));
+        let ready_json = ready_accounts
+            .map(|accounts| serde_json::to_string(accounts).expect("字符串数组可序列化"));
+        super::configuration_notifications::flush_due(&tx, now_ms)?;
         if let Some(ref ready) = ready_json {
             tx.execute("UPDATE notification_outbox SET error='等待连接恢复'
                 WHERE status='pending' AND channel_id NOT IN ('__system__','__prominent__')
@@ -554,8 +580,11 @@ impl Storage {
         now_ms: i64,
     ) -> Result<(), StorageError> {
         if outcome == "deferred" {
-            self.conn.execute("UPDATE notification_outbox SET status='pending',claimed_at_ms=NULL,
-                finished_at_ms=NULL,error='等待连接恢复' WHERE id=?1 AND status='inflight'", [id])?;
+            self.conn.execute(
+                "UPDATE notification_outbox SET status='pending',claimed_at_ms=NULL,
+                finished_at_ms=NULL,error='等待连接恢复' WHERE id=?1 AND status='inflight'",
+                [id],
+            )?;
             return Ok(());
         }
         let status = match outcome {
@@ -641,9 +670,20 @@ mod tests {
 
     fn waiting_fixture() -> Storage {
         let mut db = Storage::open_in_memory().unwrap();
-        db.save_product_config(ProductIdentity { key: "p1".into(), product_id: "1".into(), sku_id: None }, "Fixture".into(), "fixture".into(), Some(1)).unwrap();
+        db.save_product_config(
+            ProductIdentity {
+                key: "p1".into(),
+                product_id: "1".into(),
+                sku_id: None,
+            },
+            "Fixture".into(),
+            "fixture".into(),
+            Some(1),
+        )
+        .unwrap();
         db.set_product_enabled("p1", true).unwrap();
-        db.save_notification_channel("a", "a", "feishu", Some("a"), &["stock_available".into()]).unwrap();
+        db.save_notification_channel("a", "a", "feishu", Some("a"), &["stock_available".into()])
+            .unwrap();
         db.mark_notification_channel_tested("a").unwrap();
         db.set_notification_channel_enabled("a", true).unwrap();
         db
@@ -653,12 +693,24 @@ mod tests {
     fn waiting_events_expire_and_disabled_accounts_release_pending_jobs() {
         let mut db = waiting_fixture();
         observe(&mut db, "p1", "1", 1, 3.0, true, 100);
-        assert!(db.claim_ready_channel_notification(101, &[]).unwrap().is_none());
-        assert!(db.claim_ready_channel_notification(100 + PROMINENT_MAX_AGE_MS + 1, &["a".into()]).unwrap().is_none());
+        assert!(db
+            .claim_ready_channel_notification(101, &[])
+            .unwrap()
+            .is_none());
+        assert!(db
+            .claim_ready_channel_notification(100 + PROMINENT_MAX_AGE_MS + 1, &["a".into()])
+            .unwrap()
+            .is_none());
         observe(&mut db, "p1", "1", 2, 5.0, true, 400_000);
-        assert!(db.claim_ready_channel_notification(400_001, &[]).unwrap().is_none());
+        assert!(db
+            .claim_ready_channel_notification(400_001, &[])
+            .unwrap()
+            .is_none());
         db.set_notification_channel_enabled("a", false).unwrap();
-        assert!(db.claim_ready_channel_notification(400_002, &[]).unwrap().is_none());
+        assert!(db
+            .claim_ready_channel_notification(400_002, &[])
+            .unwrap()
+            .is_none());
         let pending: i64 = db.conn.query_row("SELECT count(*) FROM notification_outbox WHERE channel_id='a' AND status='pending'", [], |row|row.get(0)).unwrap();
         assert_eq!(pending, 0);
     }
@@ -668,7 +720,10 @@ mod tests {
         let mut db = waiting_fixture();
         observe(&mut db, "p1", "1", 1, 3.0, true, 100);
         observe(&mut db, "p1", "1", 2, 0.0, true, 101);
-        let job = db.claim_ready_channel_notification(102, &["a".into()]).unwrap().unwrap();
+        let job = db
+            .claim_ready_channel_notification(102, &["a".into()])
+            .unwrap()
+            .unwrap();
         assert!(!job.waited_for_connection);
         assert_eq!(job.event.stock, 3.0);
     }
@@ -677,14 +732,28 @@ mod tests {
     fn disconnect_after_claim_requeues_only_confirmed_unsubmitted_jobs() {
         let mut db = waiting_fixture();
         observe(&mut db, "p1", "1", 1, 3.0, true, 100);
-        let claimed = db.claim_ready_channel_notification(101, &["a".into()]).unwrap().unwrap();
-        db.finish_notification(claimed.id, "deferred", "等待连接恢复", 102).unwrap();
-        assert!(db.claim_ready_channel_notification(103, &[]).unwrap().is_none());
-        let restored = db.claim_ready_channel_notification(104, &["a".into()]).unwrap().unwrap();
+        let claimed = db
+            .claim_ready_channel_notification(101, &["a".into()])
+            .unwrap()
+            .unwrap();
+        db.finish_notification(claimed.id, "deferred", "等待连接恢复", 102)
+            .unwrap();
+        assert!(db
+            .claim_ready_channel_notification(103, &[])
+            .unwrap()
+            .is_none());
+        let restored = db
+            .claim_ready_channel_notification(104, &["a".into()])
+            .unwrap()
+            .unwrap();
         assert_eq!(restored.id, claimed.id);
         assert!(restored.waited_for_connection);
-        db.finish_notification(restored.id, "unknown", "未知结果", 105).unwrap();
-        assert!(db.claim_ready_channel_notification(106, &["a".into()]).unwrap().is_none());
+        db.finish_notification(restored.id, "unknown", "未知结果", 105)
+            .unwrap();
+        assert!(db
+            .claim_ready_channel_notification(106, &["a".into()])
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -692,7 +761,10 @@ mod tests {
         let mut db = waiting_fixture();
         observe(&mut db, "p1", "1", 1, 3.0, true, 100);
         db.claim_ready_channel_notification(101, &[]).unwrap();
-        let job = db.claim_ready_channel_notification(102, &["a".into()]).unwrap().unwrap();
+        let job = db
+            .claim_ready_channel_notification(102, &["a".into()])
+            .unwrap()
+            .unwrap();
         assert!(job.waited_for_connection);
         assert!(db.waiting_notification_is_current(&job.event, 102).unwrap());
         observe(&mut db, "p1", "1", 2, 0.0, true, 103);
@@ -707,36 +779,86 @@ mod tests {
     #[test]
     fn offline_routes_wait_without_blocking_online_routes_and_skip_sold_out_events() {
         let mut storage = Storage::open_in_memory().unwrap();
-        storage.save_product_config(ProductIdentity { key: "p1".into(), product_id: "1".into(), sku_id: None }, "Fixture".into(), "fixture".into(), Some(1)).unwrap();
+        storage
+            .save_product_config(
+                ProductIdentity {
+                    key: "p1".into(),
+                    product_id: "1".into(),
+                    sku_id: None,
+                },
+                "Fixture".into(),
+                "fixture".into(),
+                Some(1),
+            )
+            .unwrap();
         storage.set_product_enabled("p1", true).unwrap();
         for id in ["a", "b"] {
-            storage.save_notification_channel(id,id,"feishu",Some(id),&["stock_available".into()]).unwrap();
+            storage
+                .save_notification_channel(id, id, "feishu", Some(id), &["stock_available".into()])
+                .unwrap();
             storage.mark_notification_channel_tested(id).unwrap();
-            storage.set_notification_channel_enabled(id,true).unwrap();
+            storage.set_notification_channel_enabled(id, true).unwrap();
         }
         observe(&mut storage, "p1", "1", 1, 3.0, true, 100);
-        let fast = storage.claim_ready_channel_notification(101, &["b".into()]).unwrap().unwrap();
+        let fast = storage
+            .claim_ready_channel_notification(101, &["b".into()])
+            .unwrap()
+            .unwrap();
         assert_eq!(fast.channel_id, "b");
-        storage.finish_notification(fast.id,"accepted","",102).unwrap();
-        assert!(storage.claim_ready_channel_notification(103, &[]).unwrap().is_none());
+        storage
+            .finish_notification(fast.id, "accepted", "", 102)
+            .unwrap();
+        assert!(storage
+            .claim_ready_channel_notification(103, &[])
+            .unwrap()
+            .is_none());
         observe(&mut storage, "p1", "1", 2, 0.0, true, 110);
-        assert!(storage.claim_ready_channel_notification(111, &["a".into()]).unwrap().is_none());
-        let status: String = storage.conn.query_row("SELECT status FROM notification_outbox WHERE channel_id='a'",[],|row|row.get(0)).unwrap();
-        assert_eq!(status,"skipped");
+        assert!(storage
+            .claim_ready_channel_notification(111, &["a".into()])
+            .unwrap()
+            .is_none());
+        let status: String = storage
+            .conn
+            .query_row(
+                "SELECT status FROM notification_outbox WHERE channel_id='a'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "skipped");
     }
 
     #[test]
     fn reconnect_delivers_waiting_events_when_goods_remain_available() {
         let mut storage = Storage::open_in_memory().unwrap();
-        storage.save_product_config(ProductIdentity { key: "p1".into(), product_id: "1".into(), sku_id: None }, "Fixture".into(), "fixture".into(), Some(1)).unwrap();
-        storage.set_product_enabled("p1",true).unwrap();
-        storage.save_notification_channel("a","a","feishu",Some("a"),&["stock_available".into()]).unwrap();
+        storage
+            .save_product_config(
+                ProductIdentity {
+                    key: "p1".into(),
+                    product_id: "1".into(),
+                    sku_id: None,
+                },
+                "Fixture".into(),
+                "fixture".into(),
+                Some(1),
+            )
+            .unwrap();
+        storage.set_product_enabled("p1", true).unwrap();
+        storage
+            .save_notification_channel("a", "a", "feishu", Some("a"), &["stock_available".into()])
+            .unwrap();
         storage.mark_notification_channel_tested("a").unwrap();
-        storage.set_notification_channel_enabled("a",true).unwrap();
-        observe(&mut storage,"p1","1",1,3.0,true,100);
-        assert!(storage.claim_ready_channel_notification(101,&[]).unwrap().is_none());
-        let resumed = storage.claim_ready_channel_notification(150,&["a".into()]).unwrap().unwrap();
-        assert_eq!(resumed.event.stock,3.0);
+        storage.set_notification_channel_enabled("a", true).unwrap();
+        observe(&mut storage, "p1", "1", 1, 3.0, true, 100);
+        assert!(storage
+            .claim_ready_channel_notification(101, &[])
+            .unwrap()
+            .is_none());
+        let resumed = storage
+            .claim_ready_channel_notification(150, &["a".into()])
+            .unwrap()
+            .unwrap();
+        assert_eq!(resumed.event.stock, 3.0);
     }
 
     #[test]

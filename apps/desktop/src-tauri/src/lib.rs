@@ -1,6 +1,5 @@
 mod desktop_backend;
 mod desktop_notifications;
-mod feedback;
 mod notification_proxy;
 #[cfg(any(
     all(
@@ -265,6 +264,9 @@ pub fn run() {
             desktop_backend::set_system_notifications_enabled,
             desktop_backend::save_monitoring_config,
             desktop_backend::set_auto_start_monitoring,
+            desktop_backend::complete_configuration_change_intro,
+            desktop_backend::set_system_configuration_change_notifications_enabled,
+            desktop_backend::set_usage_statistics_enabled,
             desktop_backend::set_notification_use_system_proxy,
             desktop_backend::monitoring_action,
             desktop_backend::validate_product,
@@ -308,7 +310,6 @@ pub fn run() {
             prominent_alert::confirm_prominent_alert_frame,
             prominent_alert::dismiss_prominent_alert,
             prominent_alert::complete_purchase,
-            feedback::submit_feedback,
             prominent_alert::test_prominent_alert,
             desktop_backend::create_diagnostic_preview,
             desktop_backend::save_diagnostic_report,

@@ -1,20 +1,36 @@
 <script lang="ts">
   import Coffee from "@lucide/svelte/icons/coffee";
+  import Star from "@lucide/svelte/icons/star";
   import { desktopApi } from "$lib/desktop-api";
-  export let url: string;
+  export let url: string | null;
   let error = "";
-  async function open() {
-    try { await desktopApi.openExternalUrl(url); error = ""; }
-    catch (cause) { error = cause instanceof Error ? cause.message : "打开爱发电失败，请重试。"; }
+  async function open(address: string) {
+    try { await desktopApi.openExternalUrl(address); error = ""; }
+    catch (cause) { error = cause instanceof Error ? cause.message : "打开网页失败，请重试。"; }
   }
 </script>
 
-<button class="support-button" on:click={open}><Coffee size={18} aria-hidden="true" />打赏作者</button>
-{#if error}<p role="alert">{error}</p>{/if}
+<div class="support">
+  <p class="caption">RichoMonitor 是一个完全开源免费的软件，如果帮到了你，欢迎 star/打赏！</p>
+  <div class="actions">
+    <button class="star-button" on:click={() => open("https://github.com/lavapapa/open-richo-monitor")}><Star size={17} aria-hidden="true" />GitHub Star</button>
+    {#if url}<button class="support-button" on:click={() => url && open(url)}><Coffee size={18} aria-hidden="true" />打赏作者</button>{/if}
+  </div>
+  {#if error}<p role="alert">{error}</p>{/if}
+</div>
 
 <style>
-  .support-button { display: inline-flex; gap: 8px; align-items: center; justify-content: center; border: 1px solid #d89052; border-radius: 999px; padding: 10px 16px; background: linear-gradient(115deg, #ffe2a8, #ffd4ba 52%, #e9cfff); color: #4c2936; font: inherit; font-weight: 650; cursor: pointer; box-shadow: 0 2px 7px #c6844420; }
-  .support-button:hover { filter: brightness(1.04); }
-  .support-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
-  p { color: var(--danger); font-size: 12px; }
+  .support { text-align: center; }
+  .caption { margin: 0 0 14px; color: var(--muted); font-size: 13px; line-height: 1.65; text-wrap: pretty; }
+  .actions { display: flex; align-items: center; justify-content: center; gap: 16px; flex-wrap: wrap; }
+  button { display: inline-flex; gap: 8px; align-items: center; justify-content: center; min-height: 40px; font: inherit; font-size: 14px; cursor: pointer; transition: transform 160ms ease, background 160ms ease, box-shadow 160ms ease; }
+  .star-button { padding: 9px 4px; border: 0; border-radius: 8px; background: transparent; color: var(--foreground); }
+  .star-button :global(svg) { color: #ae791e; transition: transform 180ms ease, fill 180ms ease; }
+  .star-button:hover :global(svg) { fill: #f7cd67; transform: rotate(-12deg); }
+  .support-button { padding: 9px 16px; border: 1px solid #e7aa64; border-radius: 12px; background: linear-gradient(180deg, #ffe3ac, #ffd18b); color: #653914; font-weight: 600; box-shadow: inset 0 1px 0 #fff9, 0 2px 0 #9a58191c; }
+  .support-button:hover { background: linear-gradient(180deg, #ffe9bf, #ffce7f); box-shadow: inset 0 1px 0 #fff9, 0 4px 10px #9a581924; transform: translateY(-1px); }
+  button:active { transform: translateY(1px); }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+  [role="alert"] { color: var(--danger); font-size: 13px; }
+  @media (prefers-reduced-motion: reduce) { button, .star-button :global(svg) { transition: none; } .star-button:hover :global(svg), .support-button:hover, button:active { transform: none; } }
 </style>

@@ -36,6 +36,7 @@ app.save_config(config: AppConfig) -> Result<(), AppError>
 app.apply_startup_monitoring() -> Result<(), AppError> // 桌面新进程启动时调用
 app.set_auto_start_monitoring(enabled: bool) -> Result<(), AppError>
 app.set_system_notifications_enabled(enabled: bool) -> Result<(), AppError>
+app.set_usage_statistics_enabled(enabled: bool) -> Result<(), AppError>
 app.monitoring_action(action: MonitoringAction) -> Result<(), AppError>
 app.validate_product(product_id: u64) -> Result<ProductRecord, AppError>
 app.add_product(product_id: u64) -> Result<ProductRecord, AppError>
@@ -77,6 +78,14 @@ Core 服务拥有配置、商品/库存状态、通知渠道与发送、扫描�
 Core 以 `AppSnapshot` 作为当前业务状态载体，历史消息由 `query_messages` 分页返回。`subscribe()` 返回 `tokio::sync::broadcast::Receiver<AppSnapshot>`，状态变化发送完整快照，不另设增量事件协议或顺序号。Tauri 转发快照到 `desktop-state-changed`；平台字段用 serde `flatten` 把 `AppSnapshot` 与 `PlatformSnapshot` 合成单个桌面 payload。CLI直接订阅或在终端渲染。`wait_for_scan()` 等待当前 MonitorApp 实例的扫描worker；扫描暂停、恢复、取消通过持久化控制状态支持跨进程操作。
 
 ## 公共 JSON 字段
+
+配置变更介绍通过 `AppSnapshot.configurationChangeIntroPending` 表示。首次读取加入该标记之前的数据库，且已保存至少一个通知渠道时待介绍；新库、升级时没有渠道的旧库均无需介绍。通知图展示取消 GR IV 提醒后的商品范围，功能说明置于图下。勾选后确认会在单一事务中为全部现有渠道加入配置变更订阅，并开启系统通知中的配置变更偏好；取消勾选后确认保持关闭。两种选择均永久记录为已处理，凭据、渠道启停、测试结果与连接保持原样。以后由用户逐渠道调整。新建渠道默认勾选配置变更，系统通知的同类偏好新库默认开启、旧库默认关闭。
+
+升级提示共用 [`UpgradeFlow.svelte`](../apps/desktop/src/lib/UpgradeFlow.svelte) 固定尺寸弹窗。待确认项目由 [`upgrade-items.ts`](../apps/desktop/src/lib/upgrade-items.ts) 的 `pendingUpgradeItems` 按登记顺序筛选，跨版本升级展示全部未完成项，以当前项/总数显示进度。每项通过复选框选择，保存成功后进入下一项；失败保留当前项，中途关闭保留未确认项。已确认项由各自 Core 偏好记录，后续启动沿用结果。新增项目追加登记、内容视图及 Core 待确认状态即可复用该流程。
+
+配置变更提醒由 Core 在设置或监控商品保存成功的同一事务中记录初始状态。完成引导后，监控范围、计划、检查间隔、监控方式、异常提醒阈值、失败等待与网络偏好发生实际变化时，按 `configuration_notifications::DEBOUNCE_MS` 合并连续调整；最后一次有效变更后经过防抖等待才入队，改回初始状态时不发送。相同值重复保存、初始化、图片与会话元数据刷新保持安静，重复保存不会延后待发送提醒。通知合并商品与设置的净变化，列出新增、减少的商品和最终完整范围。通知渠道提供默认勾选的“配置变更”订阅，系统通知须同时启用系统通知和配置变更偏好。合并状态持久化，关窗、暂停、计划外、退出重开和移除最后一个商品仍可投递。上架、补货和突出提醒使用原有即时链路。
+
+通知正文保留事件标题、库存变化或异常详情，末行时间为 `YYYY-MM-DD HH:mm:ss.SSS`，沿用监控计划的时区；无商品 ID 行、时间标签与时区后缀。警告标题从 ⚠️ 开始，无装饰方括号。设置底部和购买好评后的支持区域复用同一组件：开源免费说明、左侧 GitHub Star、右侧打赏作者。
 
 `AppConfig` 是 Core 定义的唯一可编辑业务配置，字段以 [app.rs](../crates/core/src/app.rs) 的 `AppConfig` 为准。`autoStartMonitoring` 是持久化的应用启动偏好，与当前运行意愿及操作系统登录启动分别存储；默认值由 `MonitorConfig::default` 定义。计划起止时间相同时表示所选日期全天监控。商品勾选写 `ProductRecord.enabled`，渠道启停写 `ChannelView.enabled`，计划只存 `days`；Core 负责唯一校验和内部 `MonitorConfig` 转换。
 
@@ -132,9 +141,11 @@ Core 定期检查通知子进程的响应，存活但无响应的进程会被回
 
 ## 平台边界
 
-真实突出提醒提供“我买到了”，关闭该提醒后在主窗口询问“好评／有一些意见／跳过”；同一安装的评价流程关闭后不再自动重复。好评页面提供 GitHub Star 与爱发电“打赏作者”按钮，设置页底部保留同一打赏入口。测试提醒不主动询问评价。设置页的“反馈”直接打开意见表单，关闭该表单不改变购买后评价的状态。反馈提交经桌面命令发送，包含用户填写的内容、应用版本和系统类型；提交前说明这些字段，服务确认持久化后才显示收到，失败保留输入。此流程不自动上传监控数据或账号资料。公开地址由 [`support.json`](../apps/desktop/src/lib/support.json) 定义。
+真实突出提醒提供“我买到了”，关闭该提醒后在主窗口询问“好评／有一些意见／跳过”；同一安装的评价流程关闭后不再自动重复。好评页面提供 GitHub Star 与爱发电“打赏作者”按钮，设置页底部保留同一打赏入口。测试提醒不主动询问评价。设置页的“反馈”和评价中的“有一些意见”复用 Tally 嵌入表单，关闭设置入口的表单不改变购买后评价的状态。表单收集必填意见、可选截图与可选联系方式，应用版本和系统类型通过隐藏字段附带；提交前说明收集内容，收到与否由 Tally 提交结果页面确认。反馈表单由用户主动填写，监控历史与通知账号资料不会自动附带。公开地址由 [`support.json`](../apps/desktop/src/lib/support.json) 的 `feedbackUrl` 定义，用户也可从弹窗打开同一网页填写。
 
-反馈服务使用 [`worker.mjs`](../services/feedback/worker.mjs) 接收 POST `/feedback` 并写入专用 Cloudflare KV；公开入口提供提交，后台内容通过 Cloudflare 控制台查看。部署时参照 [`wrangler.example.json`](../services/feedback/wrangler.example.json) 创建本地配置，使用已有 Wrangler 登录；本地账号配置与凭据不进入仓库。免费额度以 [Workers](https://developers.cloudflare.com/workers/platform/pricing/) 和 [KV](https://developers.cloudflare.com/kv/platform/pricing/) 的平台说明为准。
+桌面快照的 `usageStatisticsEnabled` 表示本机统计同意状态，`usageStatisticsChoiceRecorded` 区分已保存的选择与尚未选择。首次引导与其他设置共用 `set_usage_statistics_enabled` 命令；偏好、数据范围和统计口径见[使用统计](usage-statistics.md)。
+
+反馈表单通过 Tally 后台编辑、发布和查看提交，开启表单所有者的邮件通知。填写者无需登录；截图和联系方式均可省略。表单字段 `version`、`platform` 与客户端 URL 参数保持一致，表单标题或问题的调整无需重发应用。Tally 账号凭据不进入应用或仓库，免费额度见 [Tally 的合理使用政策](https://tally.so/help/fair-use-policy)。
 
 默认商品目录由 Core 的 `catalog::DEFAULT_PRODUCTS` 定义，覆盖已核实的 GR III／IV 版本、独立套餐及会员卡。快照按编号合并默认目录与用户记录，已保存的名称、监控选择和检查记录优先；读取目录不联网、不入库、不启动监控。默认目录中尚未验证的商品经 `set_product_enabled` 首次启用时复用商品验证与保存流程，失败时保持未启用。前端通过右侧“添加监控／取消”操作提交选择，取消保留目录条目。
 

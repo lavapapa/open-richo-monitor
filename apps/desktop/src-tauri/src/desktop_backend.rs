@@ -268,7 +268,8 @@ pub async fn test_system_notification(
     if permission != PermissionState::Granted {
         return Ok("permission_denied");
     }
-    desktop_notifications::show_test(&app).await?;
+    let message = backend.app.notification_test_message().await.map_err(|error| error.to_string())?;
+    desktop_notifications::show_test(&app, message).await?;
     Ok("accepted_by_system")
 }
 
@@ -282,6 +283,33 @@ pub async fn set_system_notifications_enabled(
         .set_system_notifications_enabled(enabled)
         .await
         .map_err(|error| error.to_string())?;
+    Ok(OperationResult::ok())
+}
+
+#[tauri::command]
+pub async fn set_system_configuration_change_notifications_enabled(
+    backend: State<'_, std::sync::Arc<DesktopBackend>>,
+    enabled: bool,
+) -> Result<OperationResult, String> {
+    backend.app.set_system_configuration_change_notifications_enabled(enabled).await.map_err(|error| error.to_string())?;
+    Ok(OperationResult::ok())
+}
+
+#[tauri::command]
+pub async fn complete_configuration_change_intro(
+    backend: State<'_, std::sync::Arc<DesktopBackend>>,
+    enabled: bool,
+) -> Result<OperationResult, String> {
+    backend.app.complete_configuration_change_intro(enabled).await.map_err(|error| error.to_string())?;
+    Ok(OperationResult::ok())
+}
+
+#[tauri::command]
+pub async fn set_usage_statistics_enabled(
+    backend: State<'_, std::sync::Arc<DesktopBackend>>,
+    enabled: bool,
+) -> Result<OperationResult, String> {
+    backend.app.set_usage_statistics_enabled(enabled).await.map_err(|error| error.to_string())?;
     Ok(OperationResult::ok())
 }
 
@@ -901,7 +929,8 @@ impl PlatformSnapshot {
             notification_permission_error: permission.err(),
             project_url: Some("https://github.com/lavapapa/open-richo-monitor".into()),
             tutorial_url: Some("https://github.com/lavapapa/open-richo-monitor#一桌面使用".into()),
-            feedback_url: Some("https://github.com/lavapapa/open-richo-monitor/issues".into()),
+            feedback_url: serde_json::from_str::<serde_json::Value>(include_str!("../../src/lib/support.json"))
+                .expect("support.json 格式有效")["feedbackUrl"].as_str().map(str::to_owned),
         }
     }
 }

@@ -18,7 +18,7 @@ function product(productId: string, name: string, enabled = false): ProductRecor
 
 function mount(overrides: Partial<DesktopSnapshot> = {}, accepted = true) {
   const snapshot: DesktopSnapshot = {
-    setupCompleted: false, systemNotificationsEnabled: false, systemNotificationDelivery: null,
+    setupCompleted: false, configurationChangeIntroPending: false, systemNotificationsEnabled: false, systemConfigurationChangeNotificationsEnabled: true, usageStatisticsEnabled: false, usageStatisticsChoiceRecorded: false, usageStatisticsIntroPending: false, systemNotificationDelivery: null,
     runtime: null, config: null, products: [],
     catalog: [product("19", "官翻品 GR III ING 套装版本"), product("50", "官翻品 RICOH GR III HDF"),
       product("65", "官翻品 GR IIIx"), product("66", "官翻品 RICOH GR III"),
@@ -58,7 +58,7 @@ describe("三步首次设置", () => {
     expect((screen.getByRole("checkbox", { name: "登录后启动" }) as HTMLInputElement).checked).toBe(false);
     await fireEvent.click(start);
     await fireEvent.click(screen.getByRole("button", { name: "完成" }));
-    expect(view.onComplete).toHaveBeenCalledWith(false, false);
+    expect(view.onComplete).toHaveBeenCalledWith(false, false, true);
   });
   it("跳过产品选择时使用默认集合，取消不会提交", async () => {
     const view = mount();
@@ -215,7 +215,7 @@ describe("三步首次设置", () => {
     expect(screen.queryByText(/当前监控计划/)).toBeNull();
     await fireEvent.click(screen.getByRole("checkbox", { name: "登录后启动" }));
     await fireEvent.click(screen.getByRole("button", { name: "完成" }));
-    expect(view.onComplete).toHaveBeenCalledWith(true, true);
+    expect(view.onComplete).toHaveBeenCalledWith(true, true, true);
   });
 
   it("登录后启动读取实际状态，完成时提交勾选值", async () => {
@@ -226,7 +226,33 @@ describe("三步首次设置", () => {
     expect(loginStart.checked).toBe(true);
     await fireEvent.click(loginStart);
     await fireEvent.click(screen.getByRole("button", { name: "完成" }));
-    expect(view.onComplete).toHaveBeenCalledWith(false, true);
+    expect(view.onComplete).toHaveBeenCalledWith(false, true, true);
+  });
+
+  it("没有选择记录时默认勾选，统计选项位于完成按钮左侧", async () => {
+    const view = mount({ setupCompleted: true, products: [product("65", "官翻品 GR IIIx", true)] });
+    await next();
+    await fireEvent.click(screen.getByRole("button", { name: "跳过" }));
+    const statistics = screen.getByRole("checkbox", { name: "分享使用统计（可选）" }) as HTMLInputElement;
+    expect(statistics.checked).toBe(true);
+    expect(statistics.closest("footer")).toBeTruthy();
+    expect(statistics.closest(".step-content")).toBeNull();
+    await fireEvent.click(statistics);
+    await fireEvent.click(screen.getByRole("button", { name: "完成" }));
+    expect(view.onComplete).toHaveBeenCalledWith(false, true, false);
+  });
+
+  it.each([true, false])("重跑引导优先保留已保存的统计选择 %s", async (enabled) => {
+    const view = mount({ setupCompleted: true, usageStatisticsChoiceRecorded: true, usageStatisticsEnabled: enabled,
+      products: [product("65", "官翻品 GR IIIx", true)] });
+    await next();
+    await fireEvent.click(screen.getByRole("button", { name: "跳过" }));
+    const statistics = screen.getByRole("checkbox", { name: "分享使用统计（可选）" }) as HTMLInputElement;
+    expect(statistics.checked).toBe(enabled);
+    await view.rerender({ snapshot: { ...view.snapshot, usageStatisticsEnabled: !enabled } });
+    expect(statistics.checked).toBe(enabled);
+    await fireEvent.click(screen.getByRole("button", { name: "完成" }));
+    expect(view.onComplete).toHaveBeenCalledWith(false, true, enabled);
   });
 
   it("步骤标题、返回操作与完成文案对应当前步骤", async () => {

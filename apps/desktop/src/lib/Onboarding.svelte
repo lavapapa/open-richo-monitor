@@ -7,6 +7,7 @@
   import ChannelStatus from "$lib/ChannelStatus.svelte";
   import RecipientChip from "$lib/RecipientChip.svelte";
   import CompletionConfetti from "$lib/CompletionConfetti.svelte";
+  import UsageStatisticsConsent from "$lib/UsageStatisticsConsent.svelte";
 
   export let snapshot: DesktopSnapshot;
   export let busy = false;
@@ -17,7 +18,7 @@
   export let onChannelTest: (id: string) => void;
   export let onChannelEdit: (channel: DesktopSnapshot["channels"][number]) => void = () => {};
   export let onChannelToggle: (id: string, enabled: boolean) => void;
-  export let onComplete: (loginStart: boolean, autoStartMonitoring: boolean) => Promise<void>;
+  export let onComplete: (loginStart: boolean, autoStartMonitoring: boolean, usageStatistics: boolean) => Promise<void>;
   export let onCancel: () => void;
 
   const isRefurbishedGr = (product: ProductRecord) => /官翻/.test(product.name) && /GR\s*(III|IV)/i.test(product.name);
@@ -29,6 +30,7 @@
     : [...defaultProductIds];
   let loginStart = snapshot.platform?.loginStartEnabled ?? false;
   let autoStartMonitoring = snapshot.config?.autoStartMonitoring ?? true;
+  let usageStatistics = snapshot.usageStatisticsChoiceRecorded ? snapshot.usageStatisticsEnabled : true;
   let saving = false;
   let error = "";
   let heading: HTMLHeadingElement;
@@ -74,7 +76,7 @@
     saving = true;
     error = "";
     try {
-      await onComplete(loginStart, autoStartMonitoring);
+      await onComplete(loginStart, autoStartMonitoring, usageStatistics);
     } catch (cause) {
       error = `设置未完成：${cause instanceof Error ? cause.message : String(cause)}。请重试。`;
     } finally {
@@ -135,6 +137,7 @@
   </div>
 
   <footer class="step-actions">
+    {#if step === 3}<div class="usage-consent"><UsageStatisticsConsent compact enabled={usageStatistics} busy={busy || saving} onChange={(enabled) => usageStatistics = enabled} /></div>{/if}
     <div class="back-actions">{#if step === 1}<button class="text-button" disabled={busy || saving} title="取消尚未保存的商品选择" on:click={onCancel}>取消</button>{:else if step === 2}<button class="text-button" disabled={busy || saving} on:click={() => goTo(step - 1)}>上一步</button>{/if}</div>
     <div class="next-actions">
       {#if step === 1}<button class="text-button" disabled={busy || saving} title={snapshot.setupCompleted ? "沿用已有监控商品" : "使用默认监控商品"} on:click={skipProducts}>跳过</button><button class="primary" disabled={!selectedIds.length || busy || saving} on:click={saveProducts}>{saving ? "正在保存…" : "下一步"}</button>
@@ -148,7 +151,8 @@
   .onboarding { position: relative; box-sizing: border-box; width: min(100%, 800px); height: 100%; min-height: 0; flex: 1; margin: 0 auto; padding: 32px 36px 24px; display: flex; flex-direction: column; color: var(--foreground); }
   .section-heading, .step-actions, .next-actions, .notification-actions { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
   .step-content { flex: 1; min-height: 0; overflow-y: auto; padding: 2px 6px 8px 2px; }
-  .step-content.completion { display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center; }
+  .step-content.completion { display: flex; flex-direction: column; justify-content: flex-start; align-items: center; text-align: center; }
+  .usage-consent { flex: 1; min-width: 0; }
   .step-actions { flex-shrink: 0; }
   .back-actions { display: flex; gap: 16px; }
   h1 { margin: 0 0 24px; font-size: 27px; font-weight: 600; line-height: 1.3; letter-spacing: -.5px; }
@@ -169,10 +173,10 @@
   .channel-recipients { display: flex; flex-wrap: wrap; gap: 5px 12px; margin-top: 6px; }
   .channel-row > div:first-of-type { flex: 1; min-width: 0; }
   .channel-row small { display: block; margin-top: 3px; }
-  .completion h1 { margin-bottom: 12px; font-size: 36px; }
-  .completion-title { margin: 0; font-size: 19px; line-height: 1.7; }
-  .completion-message { margin: 12px 0 0; color: var(--muted); font-size: 14px; line-height: 1.7; }
-  .startup-options { display: grid; gap: 12px; margin-top: 28px; text-align: left; }
+  .completion h1 { margin-top: auto; margin-bottom: 8px; font-size: 30px; }
+  .completion-title { margin: 0; font-size: 17px; line-height: 1.5; }
+  .completion-message { margin: 6px 0 0; color: var(--muted); font-size: 13px; line-height: 1.7; }
+  .startup-options { display: flex; flex-wrap: wrap; gap: 10px 22px; justify-content: center; margin: 16px 0 auto; text-align: left; }
   .login-start { display: flex; align-items: center; gap: 10px; font-size: 14px; cursor: pointer; }
   .error { color: var(--danger); }
   .error { margin: 16px 0 0; font-size: 12px; line-height: 1.6; }

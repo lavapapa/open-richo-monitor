@@ -15,7 +15,9 @@ use serde_json::{json, Value};
 #[tokio::main]
 async fn main() {
     #[cfg(target_os = "windows")]
-    if ricoh_monitor_core::system_proxy::windows::run_helper() { return; }
+    if ricoh_monitor_core::system_proxy::windows::run_helper() {
+        return;
+    }
     if let Err(error) = execute().await {
         eprintln!("{error}");
         process::exit(2);
@@ -79,7 +81,10 @@ async fn execute() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(target_os = "windows")]
     let runtime_arguments = {
         let mut args = runtime_arguments;
-        args.extend(["--system-proxy-helper".into(), env::current_exe()?.to_string_lossy().into_owned()]);
+        args.extend([
+            "--system-proxy-helper".into(),
+            env::current_exe()?.to_string_lossy().into_owned(),
+        ]);
         app.set_notification_proxy_url(ricoh_monitor_core::system_proxy::windows::current());
         args
     };
@@ -141,6 +146,7 @@ async fn setup(app: &MonitorApp, interactive: bool) -> Result<(), Box<dyn std::e
                     ChannelEvent::StockAvailable,
                     ChannelEvent::MonitoringFailed,
                     ChannelEvent::Recovered,
+                    ChannelEvent::ConfigurationChanged,
                 ],
             })
             .await?;
@@ -306,7 +312,10 @@ async fn notifications(
                     name: name.clone(),
                     provider_id: provider.clone(),
                     values,
-                    subscriptions: vec![ChannelEvent::StockAvailable],
+                    subscriptions: vec![
+                        ChannelEvent::StockAvailable,
+                        ChannelEvent::ConfigurationChanged,
+                    ],
                 })
                 .await?;
             print(&json!(result))?;
@@ -476,6 +485,7 @@ fn parse_channel_events(value: &str) -> Result<Vec<ChannelEvent>, io::Error> {
             "stock_available" => Ok(ChannelEvent::StockAvailable),
             "monitoring_failed" => Ok(ChannelEvent::MonitoringFailed),
             "recovered" => Ok(ChannelEvent::Recovered),
+            "configuration_changed" => Ok(ChannelEvent::ConfigurationChanged),
             _ => Err(usage()),
         })
         .collect()

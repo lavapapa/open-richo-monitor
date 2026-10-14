@@ -2,6 +2,7 @@ import { Channel, convertFileSrc, invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import catalogPreview from "$lib/catalog-preview.json";
+import support from "$lib/support.json";
 
 export type Weekday = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
 export type RuntimeState =
@@ -13,7 +14,7 @@ export type RuntimeState =
   | "setup_incomplete"
   | "stopped";
 export type AvailabilityState = "unknown" | "out_of_stock" | "in_stock" | "error";
-export type ChannelEvent = "stock_available" | "monitoring_failed" | "recovered";
+export type ChannelEvent = "stock_available" | "monitoring_failed" | "recovered" | "configuration_changed";
 
 export interface UpdateStatus {
   phase: "idle" | "checking" | "available" | "downloading" | "waiting" | "installing";
@@ -242,7 +243,12 @@ export interface MessageQuery { date: string | null; productId: string | null; c
 
 export interface DesktopSnapshot {
   setupCompleted: boolean;
+  configurationChangeIntroPending: boolean;
   systemNotificationsEnabled: boolean;
+  systemConfigurationChangeNotificationsEnabled: boolean;
+  usageStatisticsEnabled: boolean;
+  usageStatisticsChoiceRecorded: boolean;
+  usageStatisticsIntroPending: boolean;
   systemNotificationDelivery: ChannelDelivery | null;
   runtime: RuntimeSnapshot | null;
   config: MonitoringConfig | null;
@@ -276,7 +282,12 @@ export class DesktopApiError extends Error {
 
 const previewSnapshot: DesktopSnapshot = {
   setupCompleted: true,
+  configurationChangeIntroPending: typeof window !== "undefined" && new URLSearchParams(window.location.search).get("preview") === "upgrade-flow",
   systemNotificationsEnabled: true,
+  systemConfigurationChangeNotificationsEnabled: true,
+  usageStatisticsEnabled: false,
+  usageStatisticsChoiceRecorded: false,
+  usageStatisticsIntroPending: typeof window !== "undefined" && ["usage-consent", "upgrade-flow"].includes(new URLSearchParams(window.location.search).get("preview") ?? ""),
   systemNotificationDelivery: null,
   runtime: { state: "monitoring", nextStartAt: null, lastSuccessAt: "2026-10-06T10:42:18.284+08:00", lastError: null },
   config: {
@@ -317,7 +328,7 @@ const previewSnapshot: DesktopSnapshot = {
   ],
   proxies: [],
   scan: null,
-  platform: { loginStartEnabled: false, notificationPermission: "granted", notificationPermissionError: null, notificationSettingsAvailable: false, projectUrl: null, tutorialUrl: null, feedbackUrl: null },
+  platform: { loginStartEnabled: false, notificationPermission: "granted", notificationPermissionError: null, notificationSettingsAvailable: false, projectUrl: null, tutorialUrl: null, feedbackUrl: support.feedbackUrl },
   recentEvents: [{ id: 1, at: "2026-10-04T09:18:00.284+08:00", kind: "stock_available", productId: "65", message: "商品 65 有货" }],
   recentChecks: [
     { productId: "65", name: "GR IIIx", availability: "in_stock", isShow: 1, stock: 3, at: "2026-10-04T09:18:00.284+08:00" },
@@ -454,6 +465,18 @@ function previewCommand(name: string, payload: Record<string, any> = {}): unknow
       return result;
     }
     case "set_auto_start_monitoring": previewSnapshot.config!.autoStartMonitoring = payload.enabled; return result;
+    case "complete_configuration_change_intro":
+      if (previewSnapshot.configurationChangeIntroPending) {
+        for (const channel of previewSnapshot.channels) {
+          channel.subscriptions = channel.subscriptions.filter((scope) => scope !== "configuration_changed");
+          if (payload.enabled) channel.subscriptions.push("configuration_changed");
+        }
+        previewSnapshot.configurationChangeIntroPending = false;
+        previewSnapshot.systemConfigurationChangeNotificationsEnabled = payload.enabled;
+      }
+      return result;
+    case "set_system_configuration_change_notifications_enabled": previewSnapshot.systemConfigurationChangeNotificationsEnabled = payload.enabled; return result;
+    case "set_usage_statistics_enabled": previewSnapshot.usageStatisticsEnabled = payload.enabled; previewSnapshot.usageStatisticsChoiceRecorded = true; previewSnapshot.usageStatisticsIntroPending = false; return result;
     case "set_notification_use_system_proxy": previewSnapshot.config!.notificationUseSystemProxy = payload.enabled; return result;
     case "set_system_notifications_enabled": previewSnapshot.systemNotificationsEnabled = payload.enabled; return result;
     case "request_notification_permission": previewSnapshot.platform!.notificationPermission = "granted"; return structuredClone(previewSnapshot.platform);
@@ -547,7 +570,6 @@ export const desktopApi = {
     return listen("purchase-completed", handler);
   },
   completePurchase: (eventId: number) => command<OperationResult>("complete_purchase", { eventId }),
-  submitFeedback: (content: string) => command<void>("submit_feedback", { content }),
   checkForUpdates: (): Promise<UpdateStatus> => isPreview()
     ? Promise.resolve({ phase: "idle", autoInstall: true, version: null, notes: null, downloaded: 0, total: null, error: null })
     : command<UpdateStatus>("check_for_updates"),
@@ -585,6 +607,9 @@ export const desktopApi = {
       ? Promise.resolve(previewSaveConfig(config))
       : command<OperationResult>("save_monitoring_config", { config }),
   setAutoStartMonitoring: (enabled: boolean) => command<OperationResult>("set_auto_start_monitoring", { enabled }),
+  completeConfigurationChangeIntro: (enabled: boolean) => command<OperationResult>("complete_configuration_change_intro", { enabled }),
+  setSystemConfigurationChangeNotificationsEnabled: (enabled: boolean) => command<OperationResult>("set_system_configuration_change_notifications_enabled", { enabled }),
+  setUsageStatisticsEnabled: (enabled: boolean) => command<OperationResult>("set_usage_statistics_enabled", { enabled }),
   setNotificationUseSystemProxy: (enabled: boolean) => command<OperationResult>("set_notification_use_system_proxy", { enabled }),
   monitoringAction: (action: "start" | "pause" | "resume" | "restart") =>
     isPreview()

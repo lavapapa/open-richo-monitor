@@ -16,17 +16,20 @@ pub enum MonitorEventKind {
     StockIncreased,
     MonitoringFailed,
     Recovered,
+    ConfigurationChanged,
 }
 
 pub type ListingEventKind = MonitorEventKind;
 
 mod catalog_lifecycle;
+mod configuration_notifications;
 mod history_storage;
 mod notification_outbox;
 mod notification_storage;
 mod product_metadata;
 mod product_statistics;
 mod runtime_storage;
+mod usage_statistics;
 pub use history_storage::{HistoryCursor, HistoryItem, HistoryPage};
 pub use notification_outbox::OutboxJob;
 pub use notification_storage::{
@@ -155,6 +158,7 @@ pub struct EventNotificationDetails {
     pub previous_is_show: Option<u8>,
     pub previous_stock: Option<f64>,
     pub failure: Option<FailureNotificationDetails>,
+    pub configuration_change: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -549,11 +553,13 @@ impl Storage {
         }
         notification_storage::initialize(&conn)?;
         notification_outbox::initialize(&conn)?;
+        configuration_notifications::initialize(&conn, new_database)?;
+        usage_statistics::initialize(&conn)?;
         if new_database {
             let config_json = serde_json::to_string(&MonitorConfig::default())
                 .map_err(StorageError::ConfigJson)?;
             conn.execute(
-                "INSERT INTO settings (id, monitor_config_json) VALUES (1, ?1)",
+                "INSERT INTO settings (id, monitor_config_json, system_configuration_change_notifications_enabled) VALUES (1, ?1, 1)",
                 [config_json],
             )?;
         }
@@ -604,6 +610,7 @@ impl Storage {
         if previous.monitoring_mode != config.monitoring_mode {
             advance_enabled_rounds(&tx)?;
         }
+        configuration_notifications::notify_config_changes(&tx, &previous, config)?;
         tx.commit()?;
         Ok(())
     }
@@ -647,7 +654,13 @@ impl Storage {
                 || name.trim().is_empty()
                 || !["system", "feishu", "wecom", "dingtalk", "weixin"].contains(&provider.as_str())
                 || subscriptions.iter().any(|value| {
-                    !["stock_available", "monitoring_failed", "recovered"].contains(&value.as_str())
+                    ![
+                        "stock_available",
+                        "monitoring_failed",
+                        "recovered",
+                        "configuration_changed",
+                    ]
+                    .contains(&value.as_str())
                 })
             {
                 return Err(StorageError::InvalidChannel);
@@ -1211,6 +1224,7 @@ impl Storage {
         enabled: bool,
     ) -> Result<(), StorageError> {
         let tx = self.conn.transaction()?;
+        let previous = configuration_notifications::monitored_products(&tx)?;
         let verified_at_ms = tx
             .query_row(
                 "SELECT verified_at_ms FROM products
@@ -1228,6 +1242,7 @@ impl Storage {
             params![product_key, enabled],
         )?;
         advance_product_round(&tx, product_key)?;
+        configuration_notifications::notify_product_changes(&tx, &previous)?;
         tx.commit()?;
         Ok(())
     }
@@ -1268,6 +1283,7 @@ impl Storage {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let previous = configuration_notifications::monitored_products(&tx)?;
         for id in ids {
             let key = id.to_string();
             let existing: bool = tx.query_row(
@@ -1313,6 +1329,7 @@ impl Storage {
             }
         }
         catalog_lifecycle::advance(&tx)?;
+        configuration_notifications::notify_product_changes(&tx, &previous)?;
         tx.commit()?;
         Ok(())
     }
@@ -1320,6 +1337,7 @@ impl Storage {
     /// 从用户目录移除商品，保留商品身份及事件历史。
     pub fn remove_product(&mut self, product_key: &str) -> Result<(), StorageError> {
         let tx = self.conn.transaction()?;
+        let previous = configuration_notifications::monitored_products(&tx)?;
         let exists: bool = tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM products WHERE product_key=?1)",
             [product_key],
@@ -1363,6 +1381,7 @@ impl Storage {
             "DELETE FROM product_statistics WHERE product_key=?1",
             [product_key],
         )?;
+        configuration_notifications::notify_product_changes(&tx, &previous)?;
         tx.commit()?;
         Ok(())
     }
@@ -1403,6 +1422,7 @@ impl Storage {
             previous_is_show: previous.as_ref().map(|(_, is_show, _)| *is_show),
             previous_stock: previous.as_ref().and_then(|(_, _, stock)| *stock),
             failure: None,
+            ..Default::default()
         };
         tx.execute(
             "INSERT INTO observations (
@@ -1834,10 +1854,13 @@ impl Storage {
         advance_enabled_rounds(&tx)?;
         tx.execute(
             "UPDATE settings SET monitor_config_json=?1, run_intent='stopped', setup_confirmed=0,
-             system_notifications_enabled=1, scan_checkpoint_json=NULL, scan_active=0 WHERE id=1",
+             system_notifications_enabled=1, system_configuration_change_notifications_enabled=1,
+             configuration_change_intro_pending=0, scan_checkpoint_json=NULL, scan_active=0 WHERE id=1",
             [config_json],
         )?;
         tx.execute("DELETE FROM notification_channels", [])?;
+        tx.execute("DELETE FROM pending_configuration_change", [])?;
+        tx.execute("UPDATE usage_statistics SET installation_id=NULL, prompt_pending=0, choice_recorded=1 WHERE id=1", [])?;
         tx.execute("DELETE FROM proxies", [])?;
         tx.execute("DELETE FROM credentials", [])?;
         tx.execute("DELETE FROM observations", [])?;
@@ -1946,6 +1969,7 @@ fn event_kind_to_db(value: ListingEventKind) -> &'static str {
         ListingEventKind::StockIncreased => "stock_increased",
         ListingEventKind::MonitoringFailed => "monitoring_failed",
         ListingEventKind::Recovered => "recovered",
+        ListingEventKind::ConfigurationChanged => "configuration_changed",
     }
 }
 
@@ -1956,6 +1980,7 @@ fn event_kind_from_db(value: &str) -> rusqlite::Result<ListingEventKind> {
         "stock_increased" => Ok(ListingEventKind::StockIncreased),
         "monitoring_failed" => Ok(ListingEventKind::MonitoringFailed),
         "recovered" => Ok(ListingEventKind::Recovered),
+        "configuration_changed" => Ok(ListingEventKind::ConfigurationChanged),
         _ => Err(rusqlite::Error::InvalidQuery),
     }
 }

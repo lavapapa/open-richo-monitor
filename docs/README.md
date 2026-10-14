@@ -6,6 +6,8 @@
 
 产品范围见 [PRODUCT.md](../PRODUCT.md)，界面规范见 [DESIGN.md](../DESIGN.md)，共享 Core 与桌面、CLI 的接口见 [app-contract.md](app-contract.md)。引导选品、上架事件和突出提醒的业务边界见 [onboarding-alert-core.md](onboarding-alert-core.md)。
 
+可选使用统计的数据范围、计数口径与用户开关见 [usage-statistics.md](usage-statistics.md)。
+
 ## 二、实现
 
 三层职责、生命周期和状态流转见 [architecture.md](architecture.md)。理光接口的请求签名和响应字段见 [product-api-signature.md](product-api-signature.md)，列表监控的分页和库存语义见 [list-monitoring-workplan.md](list-monitoring-workplan.md)，商品资料与图片的来源约定见 [product-image-workplan.md](product-image-workplan.md)。

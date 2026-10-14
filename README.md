@@ -25,9 +25,9 @@
 <!-- downloads:start -->
 | 你的电脑 | 点击下载 | 国内镜像 |
 | --- | --- | --- |
-| Mac · Apple Silicon（M1、M2、M3、M4 等） | [下载 Mac Apple Silicon 版](https://github.com/lavapapa/open-richo-monitor/releases/download/v0.1.4/RichoMonitor_0.1.4_aarch64.dmg) | [Gitee 下载](https://gitee.com/marvinfore/open-richo-monitor/releases/download/v0.1.4/RichoMonitor_0.1.4_aarch64.dmg) |
-| Mac · Intel | [下载 Mac Intel 版](https://github.com/lavapapa/open-richo-monitor/releases/download/v0.1.4/RichoMonitor_0.1.4_x64.dmg) | [Gitee 下载](https://gitee.com/marvinfore/open-richo-monitor/releases/download/v0.1.4/RichoMonitor_0.1.4_x64.dmg) |
-| Windows · 64 位 | [下载 Windows 版](https://github.com/lavapapa/open-richo-monitor/releases/download/v0.1.4/RichoMonitor_0.1.4_x64-setup.exe) | [Gitee 下载](https://gitee.com/marvinfore/open-richo-monitor/releases/download/v0.1.4/RichoMonitor_0.1.4_x64-setup.exe) |
+| Mac · Apple Silicon（M1、M2、M3、M4 等） | [下载 Mac Apple Silicon 版](https://github.com/lavapapa/open-richo-monitor/releases/download/v0.1.5/RichoMonitor_0.1.5_aarch64.dmg) | [Gitee 下载](https://gitee.com/marvinfore/open-richo-monitor/releases/download/v0.1.5/RichoMonitor_0.1.5_aarch64.dmg) |
+| Mac · Intel | [下载 Mac Intel 版](https://github.com/lavapapa/open-richo-monitor/releases/download/v0.1.5/RichoMonitor_0.1.5_x64.dmg) | [Gitee 下载](https://gitee.com/marvinfore/open-richo-monitor/releases/download/v0.1.5/RichoMonitor_0.1.5_x64.dmg) |
+| Windows · 64 位 | [下载 Windows 版](https://github.com/lavapapa/open-richo-monitor/releases/download/v0.1.5/RichoMonitor_0.1.5_x64-setup.exe) | [Gitee 下载](https://gitee.com/marvinfore/open-richo-monitor/releases/download/v0.1.5/RichoMonitor_0.1.5_x64-setup.exe) |
 <!-- downloads:end -->
 
 - **Mac 用户不知道下载哪个版本？** 打开“关于本机”：Apple M 系列选 Apple Silicon，Intel 处理器选 Intel。
@@ -149,6 +149,8 @@ Mac dev 使用独立的调试版应用标识。平台集成场景见[测试说�
 - **[提出问题或建议](https://github.com/lavapapa/open-richo-monitor/issues)**：提供系统、操作步骤和可见现象，截图前遮盖账号与二维码。
 
 应用免费使用，打赏按个人意愿参与。监控配置、通知凭据与运行记录保存在本机。
+
+可选使用统计默认关闭，参与方式与数据范围见[使用统计说明](docs/usage-statistics.md)。
 
 ## 六、许可
 

@@ -205,6 +205,9 @@ impl Storage {
         {
             return Ok(false);
         }
+        if subscription == "configuration_changed" {
+            return Ok(true);
+        }
         let product = self
             .product_configs()?
             .into_iter()
@@ -341,7 +344,13 @@ impl Storage {
             || !["system", "feishu", "wecom", "dingtalk", "weixin"].contains(&provider)
             || (provider != "system" && credential_ref.is_none_or(|value| value.trim().is_empty()))
             || subscriptions.iter().any(|value| {
-                !["stock_available", "monitoring_failed", "recovered"].contains(&value.as_str())
+                ![
+                    "stock_available",
+                    "monitoring_failed",
+                    "recovered",
+                    "configuration_changed",
+                ]
+                .contains(&value.as_str())
             })
         {
             return Err(StorageError::InvalidChannel);
@@ -367,7 +376,13 @@ impl Storage {
     ) -> Result<(), StorageError> {
         if name.trim().is_empty()
             || subscriptions.iter().any(|value| {
-                !["stock_available", "monitoring_failed", "recovered"].contains(&value.as_str())
+                ![
+                    "stock_available",
+                    "monitoring_failed",
+                    "recovered",
+                    "configuration_changed",
+                ]
+                .contains(&value.as_str())
             })
         {
             return Err(StorageError::InvalidChannel);
