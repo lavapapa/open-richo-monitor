@@ -32,16 +32,36 @@ it("Windows 转发的原生热键遵循聚焦按钮，旧交付不能关闭新�
 
 it("突出提醒遮罩始终完全不透明", () => {
   const screenStyle = source.match(/\.alert-screen\s*\{([^}]+)\}/)?.[1];
-  expect(screenStyle).toContain("background: #f5f6f8");
+  expect(screenStyle).toContain("background: #ffdf43");
   expect(screenStyle).not.toMatch(/animation|transition|opacity/);
   expect(source).not.toContain("veil-reveal");
+});
+
+it("上下警示带跟随当前库存，不把零库存写成有货", async () => {
+  let receive!: (alert: any) => void;
+  api.subscribeProminentAlert.mockImplementation(async (callback) => { receive = callback; return () => {}; });
+  render(Page);
+  await waitFor(() => expect(receive).toBeTypeOf("function"));
+  const event = { eventId: 31, presentationId: 1, name: "GR IV", stock: 0, price: null, imagePath: null, imageUrl: null, at: "" };
+  receive(event);
+  await screen.findByRole("heading", { name: "GR IV" });
+  const top = document.querySelector(".ticker-top")!;
+  const bottom = document.querySelector(".ticker-bottom")!;
+  expect(top.getAttribute("aria-hidden")).toBe("true");
+  expect(top.textContent).toContain("上架提醒");
+  expect(bottom.textContent).toContain("库存 0");
+  expect(bottom.textContent).not.toContain("有货");
+  receive({ ...event, eventId: 32, presentationId: 2, stock: 8 });
+  await waitFor(() => expect(bottom.textContent).toContain("有货 8"));
+  expect(top.textContent).toContain("立即抢购");
+  expect(bottom.textContent).not.toContain("库存 0");
 });
 
 it.each(["Escape", " ", "Enter"])("真实零库存上架如实呈现，%s关闭当前事件", async (key) => {
   api.subscribeProminentAlert.mockImplementation(async (receive) => { receive({ eventId: 31, presentationId: 1, name: "官翻品 GR IV", productId: "130", stock: 0, price: "8819.00", imageUrl: null, imagePath: "/images/130.jpg", at: "2026-10-06T10:20:00+08:00" }); return () => {}; });
   render(Page);
   await screen.findByRole("heading", { name: "官翻品 GR IV" });
-  expect(screen.getByText("库存提醒")).toBeTruthy();
+  expect(screen.getByText("库存提醒", { selector: ".eyebrow" })).toBeTruthy();
   expect(screen.getByText("库存数量")).toBeTruthy();
   expect(screen.getByText("¥8819.00")).toBeTruthy();
   expect(screen.getByRole("img", { name: "官翻品 GR IV" }).getAttribute("src")).toBe("/images/130.jpg");
@@ -55,7 +75,7 @@ it("测试复用上架通知内容，关闭失败可重试", async () => {
   api.dismissProminentAlert.mockRejectedValueOnce(new Error("关闭失败"));
   render(Page);
   await screen.findByRole("heading", { name: "官翻品 GR IIIx" });
-  expect(screen.getByText("库存提醒")).toBeTruthy();
+  expect(screen.getByText("库存提醒", { selector: ".eyebrow" })).toBeTruthy();
   expect(screen.queryByText(/测试演示|不发送渠道|演示库存|这是全屏提醒/)).toBeNull();
   expect(screen.queryByRole("button", { name: /打开理光商城/ })).toBeNull();
   expect(screen.getByText("待更新")).toBeTruthy();

@@ -55,7 +55,7 @@ describe("三步首次设置", () => {
     expect(screen.queryByText("3/3")).toBeNull();
     const start = screen.getByRole("checkbox", { name: "启动后自动开启监控" }) as HTMLInputElement;
     expect(start.checked).toBe(true);
-    expect((screen.getByRole("checkbox", { name: "登录后启动" }) as HTMLInputElement).checked).toBe(false);
+    expect((screen.getByRole("checkbox", { name: "开机自启动" }) as HTMLInputElement).checked).toBe(false);
     await fireEvent.click(start);
     await fireEvent.click(screen.getByRole("button", { name: "完成" }));
     expect(view.onComplete).toHaveBeenCalledWith(false, false, true);
@@ -213,16 +213,16 @@ describe("三步首次设置", () => {
     await next();
     await fireEvent.click(screen.getByRole("button", { name: "跳过" }));
     expect(screen.queryByText(/当前监控计划/)).toBeNull();
-    await fireEvent.click(screen.getByRole("checkbox", { name: "登录后启动" }));
+    await fireEvent.click(screen.getByRole("checkbox", { name: "开机自启动" }));
     await fireEvent.click(screen.getByRole("button", { name: "完成" }));
     expect(view.onComplete).toHaveBeenCalledWith(true, true, true);
   });
 
-  it("登录后启动读取实际状态，完成时提交勾选值", async () => {
+  it("开机自启动读取实际状态，完成时提交勾选值", async () => {
     const view = mount({ platform: { loginStartEnabled: true, notificationPermission: "granted", notificationPermissionError: null, notificationSettingsAvailable: false, projectUrl: null, tutorialUrl: null, feedbackUrl: null } });
     await next();
     await fireEvent.click(screen.getByRole("button", { name: "跳过" }));
-    const loginStart = screen.getByRole("checkbox", { name: "登录后启动" }) as HTMLInputElement;
+    const loginStart = screen.getByRole("checkbox", { name: "开机自启动" }) as HTMLInputElement;
     expect(loginStart.checked).toBe(true);
     await fireEvent.click(loginStart);
     await fireEvent.click(screen.getByRole("button", { name: "完成" }));

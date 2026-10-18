@@ -1,6 +1,6 @@
 [package]
 name = "ricoh-monitor-desktop"
-version = "0.1.5"
+version = "0.1.6"
 description = "理光库存监控桌面端"
 edition = "2021"
 

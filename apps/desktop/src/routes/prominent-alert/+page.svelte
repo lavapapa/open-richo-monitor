@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
+  import { TriangleAlert } from "@lucide/svelte";
   import appInfo from "../../../src-tauri/tauri.conf.json";
   import { desktopApi, prominentImageSrc, type ProminentAlert } from "$lib/desktop-api";
   import "$lib/theme.css";
@@ -65,6 +66,18 @@
 <svelte:head><title>库存提醒 · RM</title></svelte:head>
 <svelte:window on:keydown={(event) => { if (event.key !== "Escape" && event.target instanceof HTMLButtonElement && event.target.classList.contains("purchased")) return; if (["Escape", " ", "Enter"].includes(event.key)) { event.preventDefault(); void dismiss(); } }} />
 <main class="alert-screen">
+  <div class="ticker ticker-top" aria-hidden="true">
+    <div class="ticker-track">
+      {#each [0, 1] as copy}
+        <div class="ticker-group">
+          {#each [0, 1, 2, 3] as repeat}
+            <span class="ticker-copy"><TriangleAlert strokeWidth={2.7} /><span>{alert && alert.stock > 0 ? "立即抢购" : "上架提醒"}</span><TriangleAlert strokeWidth={2.7} /><span>库存提醒</span></span>
+          {/each}
+        </div>
+      {/each}
+    </div>
+  </div>
+  <div class="alert-stage">
   <div class="alert-card">
   <header><img src="/brand/rm-wordmark.svg" alt="RM" /><button bind:this={closeButton} aria-label="关闭" title="关闭（Esc、空格或回车）" on:click={dismiss} disabled={closing || !alert}>ESC 关闭</button></header>
   {#if alert}
@@ -81,18 +94,37 @@
   {:else}<section class="loading"><p>{error ? "提醒暂时无法读取" : "正在读取商品提醒…"}</p></section>{/if}
   {#if error}<p class="error" role="alert">{error}</p>{/if}
   </div>
+  </div>
+  <div class="ticker ticker-bottom" aria-hidden="true">
+    <div class="ticker-track">
+      {#each [0, 1] as copy}
+        <div class="ticker-group">
+          {#each [0, 1, 2, 3] as repeat}
+            <span class="ticker-copy"><span>STOCK ALERT</span><span>·</span><span>{alert ? "已上架" : "库存提醒"}</span>{#if alert}<span>·</span><span>{alert.stock > 0 ? `有货 ${alert.stock}` : `库存 ${alert.stock}`}</span>{/if}<span>·</span></span>
+          {/each}
+        </div>
+      {/each}
+    </div>
+  </div>
 </main>
 
 <style>
   :global(html), :global(body) { margin: 0; background: transparent; font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; }
   :global(*) { box-sizing: border-box; }
-  .alert-screen { height: 100dvh; display: grid; place-items: center; padding: clamp(16px, 4vw, 64px); background: #f5f6f8; color: #271b13; font-variant-numeric: tabular-nums; }
-  .alert-card { display: flex; flex-direction: column; width: min(100%, 1280px); max-height: 100%; overflow: auto; padding: clamp(20px, 3vw, 48px); background: #ffd526; border-radius: 22px; box-shadow: 0 24px 90px rgb(0 0 0 / 24%); }
+  .alert-screen { height: 100dvh; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; overflow: hidden; background: #ffdf43; color: #17150d; font-variant-numeric: tabular-nums; }
+  .ticker { display: flex; align-items: center; height: clamp(54px, 10dvh, 112px); overflow: hidden; user-select: none; pointer-events: none; font-size: clamp(30px, 5vw, 76px); line-height: 1; font-weight: 850; letter-spacing: -.035em; }
+  .ticker-track { display: flex; flex-shrink: 0; width: max-content; animation: ticker-scroll 32s linear infinite; }
+  .ticker-bottom .ticker-track { animation-direction: reverse; }
+  .ticker-group { display: flex; flex-shrink: 0; align-items: center; justify-content: space-around; min-width: 100vw; gap: .65em; padding-right: .65em; }
+  .ticker-copy { display: flex; flex-shrink: 0; align-items: center; gap: .45em; white-space: nowrap; }
+  .ticker :global(svg) { flex: none; width: 1em; height: 1em; }
+  .alert-stage { display: grid; place-items: center; min-height: 0; padding: clamp(12px, 3dvh, 32px) clamp(16px, 5vw, 96px); }
+  .alert-card { display: flex; flex-direction: column; width: min(100%, 1360px); max-height: 100%; overflow: auto; padding: clamp(20px, 3vw, 48px); background: #ffe55b; border-radius: 22px; box-shadow: 0 24px 80px rgb(76 54 0 / 24%); }
   header { display: flex; align-items: center; gap: 24px; font-size: 14px; }
   header img { width: 72px; }
-  header button { margin-left: auto; border: 0; padding: 8px 12px; background: transparent; color: inherit; border-radius: 6px; }
+  header button { margin-left: auto; border: 2px solid currentColor; padding: 10px 14px; background: transparent; color: inherit; border-radius: 12px; font-weight: 600; }
   section { flex: 1; width: 100%; max-width: 1360px; margin: 32px auto; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: center; gap: clamp(24px, 5vw, 80px); }
-  .product-visual { height: min(42dvh, 440px); min-width: 0; display: flex; align-items: center; justify-content: center; padding: 16px; background: #fff; border-radius: 10px; }
+  .product-visual { height: min(38dvh, 420px); min-width: 0; display: flex; align-items: center; justify-content: center; padding: 16px; background: #fff; border-radius: 10px; }
   .product-visual img { display: block; min-width: 0; min-height: 0; width: 100%; height: 100%; object-fit: contain; }
   .eyebrow { margin: 0 0 20px; font-weight: 650; font-size: 20px; color: #a22324; }
   h1 { margin: 0; font-size: clamp(28px, 4vw, 58px); line-height: 1.15; letter-spacing: -.035em; text-wrap: balance; overflow-wrap: anywhere; }
@@ -110,5 +142,8 @@
   footer { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 10px; font-size: 12px; color: #685724; }
   .error { color: #9c1820; background: #fffdf4; padding: 16px; }
   .loading { display: block; }
-  @media (max-width: 760px) { section { grid-template-columns: minmax(0, 1fr); } .product-visual { height: 30dvh; } header { gap: 12px; } }
+  @keyframes ticker-scroll { to { transform: translateX(-50%); } }
+  @media (prefers-reduced-motion: reduce) { .ticker-track { animation: none; } }
+  @media (max-height: 680px) and (min-width: 601px) { section { margin: 20px auto; } .numbers { margin: 20px 0; } .actions { margin-top: 20px; } h1 { font-size: clamp(28px, 3.5vw, 48px); } }
+  @media (max-width: 600px) { section { grid-template-columns: minmax(0, 1fr); margin: 24px auto; gap: 20px; } .product-visual { height: 25dvh; } header { gap: 12px; } .numbers { margin: 20px 0; } }
 </style>

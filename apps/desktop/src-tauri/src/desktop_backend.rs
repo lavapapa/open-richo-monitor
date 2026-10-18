@@ -985,7 +985,7 @@ fn set_login_start_enabled(enabled: bool) -> Result<(), String> {
     if enabled {
         let executable = std::env::current_exe().map_err(|error| error.to_string())?;
         let contents = login_start_contents(&executable);
-        let parent = path.parent().ok_or("无法确定登录启动目录。")?;
+        let parent = path.parent().ok_or("无法确定开机自启动目录。")?;
         std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
         std::fs::write(&path, contents).map_err(|error| error.to_string())?;
         #[cfg(target_os = "macos")]
@@ -997,9 +997,9 @@ fn set_login_start_enabled(enabled: bool) -> Result<(), String> {
             let status = std::process::Command::new("launchctl")
                 .args(["bootstrap", &domain, path.to_string_lossy().as_ref()])
                 .status()
-                .map_err(|error| format!("无法启用登录启动：{error}"))?;
+                .map_err(|error| format!("无法启用开机自启动：{error}"))?;
             if !status.success() {
-                return Err("系统未能启用登录启动。".into());
+                return Err("系统未能启用开机自启动。".into());
             }
         }
     } else if path.exists() {
@@ -1058,7 +1058,7 @@ fn login_start_contents(executable: &Path) -> String {
 fn set_login_start_enabled(enabled: bool) -> Result<(), String> {
     let key = windows_registry::CURRENT_USER
         .create(LOGIN_START_KEY)
-        .map_err(|error| format!("无法打开登录启动设置：{error}"))?;
+        .map_err(|error| format!("无法打开开机自启动设置：{error}"))?;
     let result = if enabled {
         let executable = std::env::current_exe().map_err(|error| error.to_string())?;
         key.set_string(LOGIN_START_NAME, login_start_contents(&executable))
@@ -1071,12 +1071,12 @@ fn set_login_start_enabled(enabled: bool) -> Result<(), String> {
             }
         })
     };
-    result.map_err(|error| format!("无法保存登录启动设置：{error}"))
+    result.map_err(|error| format!("无法保存开机自启动设置：{error}"))
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 fn set_login_start_enabled(_enabled: bool) -> Result<(), String> {
-    Err("当前系统暂不支持登录后启动。".into())
+    Err("当前系统暂不支持开机自启动。".into())
 }
 
 #[cfg(target_os = "macos")]

@@ -1055,6 +1055,8 @@
         </button>
       {/each}
     </nav>
+    <div class="sidebar-footer">
+    <UpdateNotice mode="sidebar" status={updateStatus} checked={updateChecked} onCheck={checkUpdates} onInstall={installUpdate} onAutoChange={changeAutoUpdate} />
     <div class="sidebar-state">
       {#if snapshot?.runtime}<span><i class:running={snapshot.runtime.state === "monitoring"}></i>{snapshot.runtime.state === "outside_schedule" ? "等待" : runtimeLabel(snapshot.runtime.state)}</span>{/if}
       <a class="icon-button github-link" href="https://github.com/lavapapa/open-richo-monitor" target="_blank" rel="noreferrer" aria-label="项目主页" title="项目主页" on:click={(event) => { if (!desktopApi.previewMode) { event.preventDefault(); void run(() => desktopApi.openExternalUrl("https://github.com/lavapapa/open-richo-monitor")); } }}><span aria-hidden="true"></span></a>
@@ -1062,11 +1064,11 @@
         {#if theme === "system"}<Monitor size={15} />{:else if theme === "light"}<Sun size={15} />{:else}<Moon size={15} />{/if}
       </button>
     </div>
+    </div>
   </aside>
   {/if}
 
   <main class:status-page={page === "status"} bind:this={mainElement}>
-    {#if page !== "settings"}<UpdateNotice mode="banner" status={updateStatus} checked={updateChecked} onCheck={checkUpdates} onInstall={installUpdate} onAutoChange={changeAutoUpdate} />{/if}
     {#if snapshot?.systemNotificationsEnabled && snapshot.platform?.notificationPermission === "denied"}<p class="notice error" role="alert">系统通知权限已关闭。请在系统设置中开启本应用通知，返回后点击“检查权限”。{#if page !== "notifications"}<button on:click={() => navigate("notifications")}>通知设置</button>{/if}</p>{/if}
     {#if snapshot?.systemNotificationsEnabled && snapshot.platform?.notificationPermissionError && notice?.text !== snapshot.platform.notificationPermissionError}<p class="notice error" role="alert">{snapshot.platform.notificationPermissionError}{#if page !== "notifications"}<button on:click={() => navigate("notifications")}>通知设置</button>{/if}</p>{/if}
     {#if error}<p class="notice error" role="alert">{error} <button on:click={refresh}>重试</button></p>{/if}
@@ -1242,9 +1244,9 @@
         </section>
         <section class="group settings-group"><h2>应用</h2>
           <div class="settings-row"><div><strong>{appInfo.productName}</strong><p>版本 {appVersion}</p></div></div>
-          <div class="settings-row"><div><strong>帮助引导</strong><p>重新选择监控商品、设置通知与登录后启动。</p></div><button class="secondary" on:click={() => { resetConfig(); navigate("setup"); }}>帮助引导</button></div>
+          <div class="settings-row"><div><strong>帮助引导</strong><p>重新选择监控商品、设置通知与开机自启动。</p></div><button class="secondary" on:click={() => { resetConfig(); navigate("setup"); }}>帮助引导</button></div>
           <div class="settings-row"><div><strong>外观</strong><p>跟随系统时，外观随系统设置自动切换。</p></div><select aria-label="外观" value={theme} on:change={(event) => changeTheme(event.currentTarget.value as ThemePreference)}><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></div>
-          <div class="settings-row"><div><strong>登录后启动</strong><p>登录系统后自动打开应用。</p></div><label class="switch"><input aria-label="登录后启动" type="checkbox" disabled={pendingToggles.has("login-start")} checked={snapshot?.platform?.loginStartEnabled ?? false} on:change={(event) => saveToggle("login-start", event.currentTarget, snapshot?.platform?.loginStartEnabled ?? false, (enabled) => desktopApi.setLoginStart(enabled))} /></label></div>
+          <div class="settings-row"><div><strong>开机自启动</strong><p>开机后自动打开应用。</p></div><label class="switch"><input aria-label="开机自启动" type="checkbox" disabled={pendingToggles.has("login-start")} checked={snapshot?.platform?.loginStartEnabled ?? false} on:change={(event) => saveToggle("login-start", event.currentTarget, snapshot?.platform?.loginStartEnabled ?? false, (enabled) => desktopApi.setLoginStart(enabled))} /></label></div>
           <div class="settings-row"><div><strong>启动后自动开启监控</strong><p>打开应用后按监控计划运行。</p></div><label class="switch"><input aria-label="启动后自动开启监控" type="checkbox" disabled={savingConfig || pendingToggles.has("auto-monitor")} checked={snapshot?.config?.autoStartMonitoring ?? true} on:change={(event) => saveToggle("auto-monitor", event.currentTarget, snapshot?.config?.autoStartMonitoring ?? true, (enabled) => desktopApi.setAutoStartMonitoring(enabled))} /></label></div>
           <div class="settings-row"><div><strong>通知使用系统代理（如有）</strong><p>未设置系统代理时直连，独立于商城请求设置。</p></div><label class="switch"><input aria-label="通知使用系统代理（如有）" type="checkbox" disabled={savingConfig || pendingToggles.has("notification-proxy")} checked={savedConfig.notificationUseSystemProxy} on:change={(event) => saveToggle("notification-proxy", event.currentTarget, savedConfig.notificationUseSystemProxy, desktopApi.setNotificationUseSystemProxy)} /></label></div>
           <div class="settings-row"><div><strong>日志目录</strong><p>查看应用运行记录。</p></div><button class="secondary" on:click={() => run(() => desktopApi.openLogsDirectory())}>打开目录</button></div>
@@ -1345,6 +1347,7 @@
   nav button.active { color: var(--accent-text); background: var(--accent-soft); font-weight: 600; }
   nav button.active :global(svg) { color: var(--accent); }
   .sidebar-state { display: flex; align-items: center; justify-content: space-between; flex: none; margin: 0 2px; padding: 8px 6px 0 12px; color: var(--muted); font-size: 12px; border-top: 1px solid var(--border); }
+  .sidebar-footer { flex: none; margin-top: auto; }
   .theme-switch { color: var(--muted); }
   .sidebar-state i { display: inline-block; width: 7px; height: 7px; margin-right: 8px; border-radius: 50%; background: var(--muted); }
   .sidebar-state i.running { background: var(--positive); }
@@ -1529,7 +1532,6 @@
     .settings-row { flex-wrap: wrap; }
     .reset-confirm { align-items: flex-start; flex-direction: column; }
   }
-  @media (max-height: 560px) and (min-width: 701px) { .sidebar-state { margin-top: auto; } }
   @media (max-width: 820px) {
     .recent-messages > .section-heading { gap: 8px; }
     .recent-messages > .section-heading h2 { white-space: nowrap; font-size: 15px; }
@@ -1544,7 +1546,7 @@
   .brand-name { font-size: 10px; }
   nav { gap: 2px; }
   nav button { min-height: 34px; padding-inline: 12px; font-size: 13px; }
-  .sidebar-state { margin-top: auto; padding-top: 8px; font-size: 12px; }
+  .sidebar-state { padding-top: 8px; font-size: 12px; }
   main { padding: 18px 18px 24px; font-size: 12px; container-type: inline-size; }
   main.status-page::before { display: none; }
   .status-content { gap: 0; }

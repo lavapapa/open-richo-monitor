@@ -197,7 +197,15 @@ describe("浏览器样本配置", () => {
     const page = await desktopApi.queryMessages({ date: null, productId: null, cursor: null, limit: 100 });
     expect(page.items[0].detail).toBe("商品上架 · 补货 0 → 3");
     expect(page.items.every((item) => item.detail !== "状态变化")).toBe(true);
-    expect(page.items[1].detail).toBe("检查结果：未上架 · 库存 0");
+    expect(page.items[1].detail).toBe("检查结果 未上架 · 库存 0");
+  });
+  it("默认网页预览使用正常会员卡样本，不伪造接口请求失败", async () => {
+    bridge.isTauri.mockReturnValue(false);
+    const memberCard = (await desktopApi.getSnapshot()).products.find((item) => item.productId === "108")!;
+    expect(memberCard.runtimeError).toBeNull();
+    expect(memberCard.observation).toMatchObject({ availability: "out_of_stock", isShow: 1, stock: 0 });
+    expect(memberCard.todayFailureCount).toBe(0);
+    expect(bridge.invoke).not.toHaveBeenCalled();
   });
   it("保存监控方案只更新样本快照，不调用桌面命令", async () => {
     bridge.isTauri.mockReturnValue(false);

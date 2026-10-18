@@ -93,7 +93,7 @@ let current: DesktopSnapshot;
 function messagePage(query: { date: string | null; productId: string | null; limit: number }) {
   const recorded = new Set(current.recentChecks.map((item) => `${item.productId}|${item.at}`));
   const items = [
-    ...current.recentChecks.map((item) => ({ at: item.at, productId: item.productId, name: item.name, isShow: item.isShow, stock: item.stock, detail: `检查结果：${item.isShow === 1 ? "已上架" : "未上架"}` })),
+    ...current.recentChecks.map((item) => ({ at: item.at, productId: item.productId, name: item.name, isShow: item.isShow, stock: item.stock, detail: `检查结果 ${item.isShow === 1 ? "已上架" : "未上架"}` })),
     ...current.recentEvents.filter((item) => item.kind !== "stock_available" || !recorded.has(`${item.productId}|${item.at}`)).map((item) => ({ at: item.at, productId: item.productId, name: current.products.find((product) => product.productId === item.productId)?.name ?? `商品 ${item.productId}`, isShow: null, stock: null, detail: "商品有货" })),
   ].filter((item) => (!query.date || new Date(Date.parse(item.at) + 8 * 3600_000).toISOString().slice(0, 10) === query.date) && (!query.productId || item.productId === query.productId));
   return { items: items.sort((a, b) => Date.parse(b.at) - Date.parse(a.at)).slice(0, query.limit), nextCursor: null };
@@ -401,7 +401,7 @@ describe("桌面主流程", () => {
     await screen.findByRole("heading", { name: "已暂停" });
     pending.resolve(structuredClone(current));
     await pending.promise;
-    expect(await screen.findByText("检查结果：未上架")).toBeTruthy();
+    expect(await screen.findByText("检查结果 未上架")).toBeTruthy();
     expect(bridge.invoke.mock.calls.filter(([name]) => name === "query_messages")).toHaveLength(1);
   });
 
@@ -892,7 +892,7 @@ describe("桌面主流程", () => {
     await fireEvent.click(screen.getByRole("button", { name: "下一步" }));
     await screen.findByRole("heading", { name: /恭喜！/ });
     expect(current.setupCompleted).toBe(false);
-    await fireEvent.click(screen.getByRole("checkbox", { name: "登录后启动" }));
+    await fireEvent.click(screen.getByRole("checkbox", { name: "开机自启动" }));
     expect(bridge.invoke.mock.calls.some(([name]) => name === "set_login_start")).toBe(false);
     await fireEvent.click(screen.getByRole("button", { name: "完成" }));
     expect(await screen.findByRole("heading", { name: "正在监控" })).toBeTruthy();
@@ -1228,7 +1228,9 @@ describe("桌面主流程", () => {
     await waitFor(() => expect(bridge.updateHandler).toBeTruthy());
     const available: UpdateStatus = { phase: "available", autoInstall: true, version: "0.2.0", notes: "修复连接", downloaded: 0, total: null, error: null };
     bridge.updateHandler!({ payload: available });
-    await waitFor(() => expect(screen.getByText("发现新版本 0.2.0")).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole("button", { name: "下载更新" })).toBeTruthy());
+    expect(screen.getByRole("button", { name: "下载更新" }).closest(".sidebar-footer")).toBeTruthy();
+    expect(document.querySelector("main .update-banner")).toBeNull();
     expect(screen.queryByRole("alert", { name: /更新/ })).toBeNull();
 
     await fireEvent.click(screen.getByRole("button", { name: "其他设置" }));
@@ -1240,6 +1242,23 @@ describe("桌面主流程", () => {
 
     cleanup();
     expect(bridge.updateUnlisten).toHaveBeenCalledOnce();
+  });
+
+  it("侧栏持续同步下载和就绪状态，页面滚动区域没有更新横幅", async () => {
+    render(Page);
+    await waitFor(() => expect(bridge.updateHandler).toBeTruthy());
+    const status: UpdateStatus = { phase: "downloading", autoInstall: true, version: "0.2.0", notes: null, downloaded: 512, total: 1024, error: null };
+    bridge.updateHandler!({ payload: status });
+    expect(await screen.findByText("自动下载 · 50%")).toBeTruthy();
+    await fireEvent.click(screen.getByRole("button", { name: "监控产品" }));
+    expect(screen.getByText("自动下载 · 50%").closest("aside")).toBeTruthy();
+    bridge.updateHandler!({ payload: { ...status, phase: "waiting", downloaded: 1024 } });
+    expect(await screen.findByText("点击立即更新")).toBeTruthy();
+    await fireEvent.click(screen.getByRole("button", { name: "立即更新" }));
+    expect(screen.getByRole("dialog", { name: "立即更新？" })).toBeTruthy();
+    await fireEvent.click(screen.getByRole("button", { name: "取消" }));
+    expect(bridge.installUpdateCount).toBe(0);
+    expect(document.querySelector("main .update-sidebar")).toBeNull();
   });
 
   it("安装失败保留可重试版本并直接显示原生错误", async () => {

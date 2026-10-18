@@ -1,8 +1,9 @@
 <script lang="ts">
+  import { CircleArrowUp, Download, LoaderCircle, RotateCcw } from "@lucide/svelte";
   import type { UpdateStatus } from "$lib/desktop-api";
 
   export let status: UpdateStatus;
-  export let mode: "banner" | "settings";
+  export let mode: "sidebar" | "settings";
   export let checked = false;
   export let onCheck: () => void;
   export let onInstall: (immediate?: boolean) => void;
@@ -12,6 +13,8 @@
   $: visible = ["available", "downloading", "waiting", "installing"].includes(status.phase);
   $: checking = status.phase === "checking";
   $: busy = checking || status.phase === "downloading" || status.phase === "installing";
+  $: versionLabel = `新版本${status.version ? ` ${status.version}` : ""}`;
+  $: percentage = status.total ? ` · ${Math.min(100, Math.floor(status.downloaded / status.total * 100))}%` : "";
 
   function bytes(value: number): string {
     if (value < 1024) return `${value} B`;
@@ -20,24 +23,19 @@
   }
 </script>
 
-{#if mode === "banner"}
+{#if mode === "sidebar"}
   {#if visible}
-    <section class="update-banner" aria-label="应用更新" role="status">
-      <div class="copy">
-        <strong>{status.phase === "installing" ? "正在安装更新…" : `发现新版本${status.version ? ` ${status.version}` : ""}`}</strong>
-        {#if status.phase === "downloading"}
-          <p>{status.total ? `${Math.min(100, Math.floor(status.downloaded / status.total * 100))}% · ` : "正在下载 · "}{bytes(status.downloaded)}{status.total ? ` / ${bytes(status.total)}` : ""}</p>
-        {:else if status.phase === "installing"}
-          <p>安装完成后应用将自动重启。</p>
-        {:else if status.phase === "waiting"}
-          <p>更新已下载，等待监控与扫描空闲后安装。</p>
-        {:else}
-          {#if status.error}<p class="failure" role="alert">{status.error}</p>{/if}
-          <p>安装时会短暂中断监控与通知连接，重启后恢复。</p>
-        {/if}
-      </div>
-      <div class="actions">{#if status.phase === "available"}<button class="primary" disabled={busy} on:click={() => onInstall(false)}>监控空闲时更新</button>{/if}{#if status.phase === "available" || status.phase === "waiting"}<button class="text-button" on:click={() => confirmation.showModal()}>立即更新</button>{/if}</div>
-    </section>
+    <div class="update-sidebar" aria-label="应用更新" role="status">
+      {#if status.phase === "downloading"}
+        <span class="compact" title={`${versionLabel} · ${bytes(status.downloaded)}${status.total ? ` / ${bytes(status.total)}` : ""}`}><LoaderCircle class="spinner" size={14} aria-hidden="true" /><span>{status.autoInstall ? "自动下载" : "正在下载"}{percentage}</span></span>
+      {:else if status.phase === "installing"}
+        <span class="compact" title="安装完成后应用将自动重启。"><LoaderCircle class="spinner" size={14} aria-hidden="true" /><span>正在更新…</span></span>
+      {:else if status.phase === "waiting"}
+        <button class="compact" aria-label="立即更新" title={`${versionLabel}已下载，监控与扫描空闲后安装；点击可立即更新。`} on:click={() => confirmation.showModal()}><CircleArrowUp size={14} aria-hidden="true" /><span>点击立即更新</span></button>
+      {:else}
+        <button class="compact" class:failure={!!status.error} aria-label={status.error ? "重试下载" : "下载更新"} title={status.error ? `${versionLabel} · ${status.error}` : `${versionLabel}，下载后等待监控空闲安装。`} on:click={() => onInstall(false)}>{#if status.error}<RotateCcw size={14} aria-hidden="true" />{:else}<Download size={14} aria-hidden="true" />{/if}<span>{status.error ? "更新失败 · 重试" : "新版本 · 下载"}</span></button>
+      {/if}
+    </div>
   {/if}
 {:else}
   <div class="settings-row update-settings">
@@ -67,8 +65,15 @@
 </dialog>
 
 <style>
-  .update-banner { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 0 0 14px; padding: 12px 14px; border: 1px solid var(--accent); border-radius: 7px; background: var(--accent-soft); }
-  .copy { min-width: 0; }
+  .update-sidebar { margin: 0 2px 8px; }
+  .compact { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 30px; padding: 5px 6px; font: inherit; font-size: 12px; line-height: 1.5; text-align: left; color: var(--muted); }
+  button.compact { border: 0; border-radius: 5px; background: transparent; color: var(--accent-text); cursor: pointer; }
+  button.compact:hover { background: var(--accent-soft); }
+  button.compact:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .compact :global(svg) { flex: none; }
+  .compact :global(.spinner) { animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .compact :global(.spinner) { animation: none; } }
   strong { font-size: 13px; font-weight: 600; }
   p { margin: 3px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
   .failure { color: var(--danger); }
@@ -80,5 +85,4 @@
   dialog::backdrop { background: rgb(0 0 0 / 35%); }
   dialog h2 { margin: 0 0 12px; font-size: 20px; }
   dialog .actions { margin-top: 24px; }
-  @media (max-width: 700px) { .update-banner { align-items: flex-start; flex-direction: column; } }
 </style>

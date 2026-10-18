@@ -175,7 +175,7 @@ fn history_detail(
     }
     if changes.is_empty() {
         changes.push(format!(
-            "检查结果：{}",
+            "检查结果 {}",
             if listed == Some(1) {
                 "已上架"
             } else {
@@ -217,7 +217,7 @@ mod tests {
         assert_eq!(next.items[0].detail, "补货 3 → 5");
         let all = storage.query_history(0, 6000, None, None, 100).unwrap();
         assert_eq!(all.items[3].detail, "商品上架 · 补货 0 → 3");
-        assert_eq!(all.items[4].detail, "检查结果：未上架 · 库存 0");
+        assert_eq!(all.items[4].detail, "检查结果 未上架 · 库存 0");
     }
 
     #[test]

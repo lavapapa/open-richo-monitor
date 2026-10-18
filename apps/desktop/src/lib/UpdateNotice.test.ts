@@ -1,9 +1,13 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/svelte";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import UpdateNotice from "./UpdateNotice.svelte";
 import type { UpdateStatus } from "$lib/desktop-api";
 
 afterEach(cleanup);
+beforeEach(() => {
+  HTMLDialogElement.prototype.showModal = function () { this.setAttribute("open", ""); };
+  HTMLDialogElement.prototype.close = function () { this.removeAttribute("open"); };
+});
 
 it("等待空闲时保留立即更新入口，默认开启自动更新", async () => {
   const onInstall = vi.fn();
@@ -18,10 +22,10 @@ it("等待空闲时保留立即更新入口，默认开启自动更新", async (
   expect(onInstall).not.toHaveBeenCalled();
 });
 
-it("主按钮请求空闲更新", async () => {
+it("侧栏下载入口请求空闲更新", async () => {
   const onInstall = vi.fn();
-  render(UpdateNotice, { props: { mode: "banner", status: status({ phase: "available" }), onCheck: vi.fn(), onInstall } });
-  await fireEvent.click(screen.getByRole("button", { name: "监控空闲时更新" }));
+  render(UpdateNotice, { props: { mode: "sidebar", status: status({ phase: "available" }), onCheck: vi.fn(), onInstall } });
+  await fireEvent.click(screen.getByRole("button", { name: "下载更新" }));
   expect(onInstall).toHaveBeenCalledWith(false);
 });
 
@@ -29,18 +33,22 @@ const status = (overrides: Partial<UpdateStatus> = {}): UpdateStatus => ({
   phase: "idle", autoInstall: true, version: null, notes: null, downloaded: 0, total: null, error: null, ...overrides,
 });
 
-it("顶部更新条显示版本和安装中断提示，不铺开更新说明", () => {
-  render(UpdateNotice, { props: { mode: "banner", status: status({ phase: "available", autoInstall: true, version: "0.2.0", notes: "修复连接稳定性" }), onCheck: vi.fn(), onInstall: vi.fn() } });
-  expect(screen.getByText("发现新版本 0.2.0")).toBeTruthy();
+it("侧栏保留简短操作，版本和完整说明留在提示与设置中", () => {
+  render(UpdateNotice, { props: { mode: "sidebar", status: status({ phase: "available", autoInstall: true, version: "0.2.0", notes: "修复连接稳定性" }), onCheck: vi.fn(), onInstall: vi.fn() } });
+  expect(screen.getByRole("button", { name: "下载更新" }).getAttribute("title")).toContain("0.2.0");
   expect(screen.queryByText("修复连接稳定性")).toBeNull();
-  expect(screen.getByText("安装时会短暂中断监控与通知连接，重启后恢复。")).toBeTruthy();
-  expect(screen.getByRole("button", { name: "监控空闲时更新" })).toBeTruthy();
+  expect(screen.getByText("新版本 · 下载")).toBeTruthy();
 });
 
-it("顶部更新条完整显示可重试的下载错误", () => {
+it("侧栏下载错误可重试，完整原因可通过提示查看", async () => {
   const error = `签名校验失败：${"证书信息不匹配；".repeat(40)}`;
-  render(UpdateNotice, { props: { mode: "banner", status: status({ phase: "available", autoInstall: true, version: "0.2.0", error }), onCheck: vi.fn(), onInstall: vi.fn() } });
-  expect(screen.getByRole("alert").textContent).toBe(error);
+  const onInstall = vi.fn();
+  render(UpdateNotice, { props: { mode: "sidebar", status: status({ phase: "available", autoInstall: true, version: "0.2.0", error }), onCheck: vi.fn(), onInstall } });
+  const retry = screen.getByRole("button", { name: "重试下载" });
+  expect(retry.textContent).toBe("更新失败 · 重试");
+  expect(retry.getAttribute("title")).toContain(error);
+  await fireEvent.click(retry);
+  expect(onInstall).toHaveBeenCalledWith(false);
 });
 
 it("设置页通过展开项显示完整更新说明，成功检查显示最新状态", async () => {
@@ -58,12 +66,36 @@ it("尚未检查和网页预览显示自动检查说明", () => {
 });
 
 it("显示下载进度并在安装阶段隐藏重复安装入口", async () => {
-  const view = render(UpdateNotice, { props: { mode: "banner", status: status({ phase: "downloading", downloaded: 512, total: 1024 }), onCheck: vi.fn(), onInstall: vi.fn() } });
-  expect(screen.getByText("50% · 512 B / 1.0 KB")).toBeTruthy();
-  expect(screen.queryByRole("button", { name: "监控空闲时更新" })).toBeNull();
+  const view = render(UpdateNotice, { props: { mode: "sidebar", status: status({ phase: "downloading", downloaded: 512, total: 1024 }), onCheck: vi.fn(), onInstall: vi.fn() } });
+  expect(screen.getByText("自动下载 · 50%")).toBeTruthy();
+  expect(screen.getByTitle(/512 B \/ 1.0 KB/)).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "下载更新" })).toBeNull();
   await view.rerender({ status: status({ phase: "installing" }) });
-  expect(screen.getByText("正在安装更新…")).toBeTruthy();
-  expect(screen.getByText("安装完成后应用将自动重启。")).toBeTruthy();
+  expect(screen.getByText("正在更新…")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "立即更新" })).toBeNull();
+});
+
+it("下载完成后的侧栏立即更新需要确认，取消保持等待", async () => {
+  const onInstall = vi.fn();
+  render(UpdateNotice, { props: { mode: "sidebar", status: status({ phase: "waiting", version: "0.2.0" }), onCheck: vi.fn(), onInstall } });
+  await fireEvent.click(screen.getByRole("button", { name: "立即更新" }));
+  expect(screen.getByRole("dialog", { name: "立即更新？" })).toBeTruthy();
+  await fireEvent.click(screen.getByRole("button", { name: "取消" }));
+  expect(onInstall).not.toHaveBeenCalled();
+  await fireEvent.click(screen.getByRole("button", { name: "立即更新" }));
+  await fireEvent.click(screen.getByRole("button", { name: "立即更新并重启" }));
+  expect(onInstall).toHaveBeenCalledExactlyOnceWith(true);
+});
+
+it.each(["idle", "checking"] as const)("%s 状态不占侧栏空间", (phase) => {
+  render(UpdateNotice, { props: { mode: "sidebar", status: status({ phase }), onCheck: vi.fn(), onInstall: vi.fn() } });
+  expect(screen.queryByRole("status")).toBeNull();
+});
+
+it("未知下载大小或关闭自动更新时，下载状态仍然如实显示", () => {
+  render(UpdateNotice, { props: { mode: "sidebar", status: status({ phase: "downloading", autoInstall: false, downloaded: 512 }), onCheck: vi.fn(), onInstall: vi.fn() } });
+  expect(screen.getByText("正在下载")).toBeTruthy();
+  expect(screen.queryByText(/%/)).toBeNull();
 });
 
 it("设置页展示检查错误并提供重试", async () => {
