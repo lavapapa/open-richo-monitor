@@ -3497,7 +3497,12 @@ impl MonitorApp {
             if !active {
                 drop(permit);
                 let checkpoint = self.call(|db| db.scan_checkpoint()).await?;
-                *self.scan.lock().await = checkpoint.map(ProductIdScan::restore);
+                let Some(checkpoint) = checkpoint else {
+                    // 另一实例可能在两次读取之间取消扫描，保留取消状态供订阅者接收。
+                    self.cancel_missing_scan(scan_id).await;
+                    break;
+                };
+                *self.scan.lock().await = Some(ProductIdScan::restore(checkpoint));
                 let _ = self.snapshot().await;
                 continue;
             }
