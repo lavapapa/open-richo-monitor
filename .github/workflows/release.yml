@@ -9,38 +9,74 @@ on:
         description: 构建平台（单平台仅生成工件）
         type: choice
         default: all
-        options: [all, macos-15, windows-2022]
+        options: [all, macos-15, macos-15-intel, windows-2022]
 
 permissions:
-  contents: write
+  contents: read
+concurrency:
+  group: release-${{ github.ref }}-${{ inputs.platform || 'all' }}
+  cancel-in-progress: false
 
 jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Release contract
+        run: |
+          node scripts/verify-release.mjs
+          node scripts/update-readme-downloads.mjs --check
+          node --test scripts/*.test.mjs
+      - name: Match version tag
+        if: github.event_name == 'push' || inputs.platform == 'all'
+        run: |
+          VERSION=$(node -p 'JSON.parse(require("fs").readFileSync("apps/desktop/src-tauri/tauri.conf.json")).version')
+          if [ "$GITHUB_REF" != "refs/tags/v$VERSION" ]; then
+            echo "全平台发行须选择 v$VERSION 标签；分支调试请选择单个平台。" >&2
+            exit 1
+          fi
+          test -s "docs/releases/v$VERSION.md"
   build:
+    needs: preflight
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON(inputs.platform && inputs.platform != 'all' && format('["{0}"]', inputs.platform) || '["macos-15","windows-2022"]') }}
+        os: ${{ fromJSON(inputs.platform && inputs.platform != 'all' && format('["{0}"]', inputs.platform) || '["macos-15","macos-15-intel","windows-2022"]') }}
     runs-on: ${{ matrix.os }}
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
       CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '2'
       CARGO_PROFILE_DEV_DEBUG: '0'
       CARGO_PROFILE_TEST_DEBUG: '0'
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            apps/desktop/package-lock.json
+            apps/notification-runtime/package-lock.json
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri -> ../../../target
+          cache-targets: false
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
       - name: Install dependencies
+        if: runner.os == 'macOS'
         shell: bash
         run: |
-          node scripts/update-readme-downloads.mjs --check
           npm ci --prefix apps/notification-runtime
           npm ci --prefix apps/desktop
       - name: macOS tests and package
@@ -49,10 +85,10 @@ jobs:
         run: |
           npm test --prefix apps/notification-runtime
           npm run check --prefix apps/desktop
-          npm test --prefix apps/desktop
-          cargo test --locked --manifest-path crates/core/Cargo.toml
+          npm test --prefix apps/desktop -- --maxWorkers=2
+          cargo test --locked --manifest-path crates/core/Cargo.toml -- --test-threads=2
           npm run build:notifications --prefix apps/desktop
-          cargo test --locked --manifest-path apps/desktop/src-tauri/Cargo.toml
+          cargo test --locked --manifest-path apps/desktop/src-tauri/Cargo.toml -- --test-threads=2
           cargo clean --profile dev --manifest-path crates/core/Cargo.toml
           df -h .
           npm run package:macos:dmg --prefix apps/desktop
@@ -61,7 +97,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: ./scripts/build-windows.ps1
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: release-${{ matrix.os }}
           path: |
@@ -70,17 +106,22 @@ jobs:
             dist/**/*.exe
             dist/**/*.sig
           if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
 
   draft:
     needs: build
     if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: 24
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v6
         with:
           path: dist/release
           merge-multiple: true
@@ -94,4 +135,6 @@ jobs:
           find dist/release -mindepth 2 -type f -exec cp {} dist/release/ \;
           cp docs/private-trial.txt dist/release/INSTALL.txt
           node scripts/create-update-manifest.mjs dist/release "docs/releases/v$VERSION.md"
-          gh release create "v$VERSION" $(find dist/release -maxdepth 1 -type f) --verify-tag --draft --title "RichoMonitor $VERSION" --notes-file "docs/releases/v$VERSION.md"
+          node scripts/verify-release.mjs dist/release
+          mapfile -t ASSETS < <(find dist/release -maxdepth 1 -type f)
+          gh release create "v$VERSION" "${ASSETS[@]}" --verify-tag --draft --title "RichoMonitor $VERSION" --notes-file "docs/releases/v$VERSION.md"

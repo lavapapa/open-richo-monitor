@@ -9,6 +9,7 @@
 [![MIT License](https://img.shields.io/badge/License-MIT-c82036?style=flat-square)](LICENSE)
 [![Desktop](https://img.shields.io/badge/Desktop-macOS%20%7C%20Windows-24292f?style=flat-square)](#一下载)
 [![GitHub Release](https://img.shields.io/github/v/release/lavapapa/open-richo-monitor?style=flat-square&color=c82036&label=Download)](https://github.com/lavapapa/open-richo-monitor/releases/latest)
+[![Quick checks](https://github.com/lavapapa/open-richo-monitor/actions/workflows/checks.yml/badge.svg)](https://github.com/lavapapa/open-richo-monitor/actions/workflows/checks.yml)
 
 [下载](#一下载) · [上手](#二上手) · [功能](#三功能) · [开发](#四开发) · [打赏作者](#五支持)
 
@@ -124,7 +125,7 @@ npm --prefix apps/notification-runtime ci
 | Core 测试 | `cargo test --manifest-path crates/core/Cargo.toml` |
 | 原生桌面测试 | `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib` |
 
-Mac dev 使用独立的调试版应用标识。平台集成场景见[测试说明](docs/testing.md)。
+Mac dev 使用独立的调试版应用标识。平台集成场景见[测试说明](docs/testing.md)，云端检查与构建入口见 [CI 说明](docs/ci.md)。
 
 </details>
 

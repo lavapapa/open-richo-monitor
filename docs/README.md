@@ -16,6 +16,6 @@
 
 产品行为和测试方法分别见 [specification.md](specification.md) 与 [testing.md](testing.md)。测试命令与桌面启动入口见 [项目说明](../README.md)。
 
-正式发布前逐项检查 [macOS 发版验收清单](release-checklist.md)。自动更新与发布流程见 [updates.md](updates.md)。
+正式发布前逐项检查 [macOS 发版验收清单](release-checklist.md)。自动检查与云端构建见 [ci.md](ci.md)，自动更新与发布流程见 [updates.md](updates.md)。
 
 开发时先明确验收场景，再添加失败测试并实现目标行为。自动化测试与原生平台验收分别判断，权限、桌面图层和真实投递以实际观察为准。

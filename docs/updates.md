@@ -18,17 +18,17 @@
 
 ## 二、构件
 
-发行流程构建 Apple Silicon 与 Windows x64；Intel Mac 按需在实机补充构建。`scripts/create-update-manifest.mjs` 从配置版本和实际 `.sig` 生成平台条目；目录中包含 Intel 更新归档时，加入 `darwin-x86_64` 条目。Mac 更新使用完整 `.app.tar.gz`，Windows 更新使用同一 NSIS `.exe`；DMG 供手动安装。架构选择由官方插件完成。
+发行流程在 GitHub 托管的 Apple Silicon、Intel Mac 和 Windows 环境并行构建三个版本。`scripts/create-update-manifest.mjs` 从配置版本和实际 `.sig` 生成平台条目；`scripts/verify-release.mjs` 要求三平台安装文件、更新包、签名与清单齐全且一致，检查通过后创建草稿 Release。Mac 更新使用完整 `.app.tar.gz`，Windows 更新使用同一 NSIS `.exe`；DMG 供手动安装。架构选择由官方插件完成。
 
 原生程序、通知脚本、Bun 可执行文件与第三方声明作为一个安装单元交付。更换 Bun 时按 `scripts/build-notification-runtime.mjs` 的冻结版本更新源码资料，并在目标架构执行 `scripts/test-notification-runtime.mjs`。Mac 构建通过 `scripts/build-macos.mjs` 恢复 Bun 原厂签名、签外层 App，然后重新生成并签署更新归档；不得使用恢复签名前的归档。
 
 ## 三、发版
 
-更新版本后运行 `node scripts/update-readme-downloads.mjs` 同步 README 的三种安装包链接；发行流程会检查链接版本。Intel 安装包按该版本的同一命名规则补齐。
+更新版本后运行 `node scripts/update-readme-downloads.mjs` 同步 README 的三种安装包链接；发行流程会检查链接版本，以及 Cargo、npm、Tauri 的版本一致性。
 
-在 `apps/desktop/src-tauri/tauri.conf.json` 更新版本，同时同步 desktop 的 Cargo/npm 版本，提交并建立同名 `v版本` 标签。读取 [验收清单](release-checklist.md)，完成相关平台验收；通过 `.github/workflows/release.yml` 构建两个平台并上传到草稿 Release。确认全部安装包、签名与更新清单可用后发布该 Release，并将其设为 latest。更新清单与构件应一次发布，避免指向尚未上传的文件。
+在 `apps/desktop/src-tauri/tauri.conf.json` 更新版本，同时同步 desktop 的 Cargo/npm 版本，提交并建立同名 `v版本` 标签。读取 [验收清单](release-checklist.md)，完成相关平台验收；通过 `.github/workflows/release.yml` 构建三个平台并上传到草稿 Release。确认全部安装包、签名与更新清单可用后发布该 Release，并将其设为 latest。更新清单与构件应一次发布，避免指向尚未上传的文件。
 
-手动运行流程时可选择单个平台重建工件；该模式不创建 Release。macOS 测试结束后清理 debug 编译缓存，为正式构建和 DMG 临时卷保留磁盘空间。
+手动运行流程时可选择单个平台重建工件；该模式不创建 Release。全平台手动运行须选择与应用版本匹配的标签，可执行 `gh workflow run release.yml --ref v版本 -f platform=all`；分支调试选择单个平台。macOS 测试结束后清理 debug 编译缓存，为正式构建和 DMG 临时卷保留磁盘空间。
 
 Gitee 的公开镜像为 `marvinfore/open-richo-monitor`。同步 GitHub 的主分支与版本标签，在同名发行版上传完整安装包、更新构件和签名。将相同构件放入独立的镜像清单目录，运行 `node scripts/create-update-manifest.mjs 目录 "" https://gitee.com/marvinfore/open-richo-monitor/releases/download/v版本`，生成指向 Gitee 附件的 `latest.json`；全部附件齐全后一起创建发行版。公开后用未登录请求检查 `releases/download/latest/latest.json` 及其中的构件地址。源码同步与发行版附件分别处理；浏览器登录或发布凭据留在发布者一侧，App 无需 Gitee 账号或访问令牌。
 

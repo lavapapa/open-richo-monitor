@@ -1,0 +1,42 @@
+name: Quick checks
+on:
+  pull_request:
+  push:
+    branches: [main, 'codex/**']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            apps/desktop/package-lock.json
+            apps/notification-runtime/package-lock.json
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+          cache: false
+      - name: Workflow syntax
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -shellcheck=
+      - name: Versions, download links and release scripts
+        run: |
+          node scripts/verify-release.mjs
+          node scripts/update-readme-downloads.mjs --check
+          node --test scripts/*.test.mjs
+      - name: Frontend and notification runtime
+        run: |
+          npm ci --prefix apps/notification-runtime
+          npm ci --prefix apps/desktop
+          npm test --prefix apps/notification-runtime
+          npm run check --prefix apps/desktop
+          npm test --prefix apps/desktop -- --maxWorkers=2

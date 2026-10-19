@@ -1,0 +1,32 @@
+name: Published downloads
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      include_gitee:
+        description: 同时检查 Gitee（镜像上传完成后使用）
+        type: boolean
+        default: true
+  schedule:
+    # 每周一北京时间 08:00 检查公开下载，不访问商城或聊天账号。
+    - cron: '0 0 * * 1'
+permissions:
+  contents: read
+jobs:
+  downloads:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Verify public manifests and binaries
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = release ] || [ "${{ inputs.include_gitee }}" = false ]; then
+            node scripts/verify-downloads.mjs --github-only
+          else
+            node scripts/verify-downloads.mjs
+          fi
