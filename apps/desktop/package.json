@@ -1,6 +1,6 @@
 {
   "name": "ricoh-monitor-desktop",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "RichoMonitor 桌面端",
   "type": "module",
   "scripts": {

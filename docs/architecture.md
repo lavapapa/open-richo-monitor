@@ -10,7 +10,7 @@
 
 `apps/desktop/src/routes/+page.svelte` 负责导航、表单草稿、筛选、虚拟表格、弹窗和操作反馈。`src/lib/desktop-api.ts` 定义类型并封装 Tauri invoke 与状态订阅。前端显示核心提供的检查次数、观察结果和扫描进度；切页、隐藏窗口、卸载组件不会结束核心任务。
 
-外观选择保存在 WebView 的界面偏好中，`theme-init.js` 在首屏加载时应用选择，`theme.css` 通过系统媒体查询实时切换配色。主题、表格筛选与未保存表单草稿属于前端状态，不写入监控配置。
+外观选择保存在 WebView 的界面偏好中，`theme-init.js` 在首屏加载时应用选择，`theme.css` 通过系统媒体查询实时切换配色。前端通过 `set_desktop_theme` 同步原生窗口外观，使系统侧栏材质与页面主题一致。主题、表格筛选与未保存表单草稿属于界面状态，不写入监控配置。
 
 ### 1.2 命令适配
 
@@ -29,6 +29,8 @@
 `app/usage_statistics.rs` 在 Core 运行期持有独立后台统计任务，消费计数快照与监控发起事件；本地同意偏好由 `storage/usage_statistics.rs` 保存。数据范围与口径见[使用统计](usage-statistics.md)。
 
 ### 1.4 平台适配
+
+`native_desktop.rs` 提供 macOS 原生应用菜单和主窗口状态管理。主窗口以 `titleBarStyle: Overlay` 和 `hiddenTitle` 使用全尺寸内容区，系统窗口按钮保留，顶部拖动区使用 Tauri 自带的 `data-tauri-drag-region` 行为；拖动能力限定 macOS 主窗口。原生菜单通过 `desktop-action` 事件调用共享页面操作；`desktop-interactions.ts` 统一页面快捷键与侧栏键盘导航。窗口位置、尺寸与缩放交给 Tauri 官方 window-state 插件，突出提醒窗口保持独立。调试版本采用独立应用标识，允许与正式版本并行运行。
 
 macOS 与 Windows 使用同一套 Core、Svelte 界面和 Bun 通知脚本。Rust 的 `cfg(target_os)` 将系统通知、代理读取、登录启动和突出提醒交给对应系统 API；目标 Tauri 配置选择运行时二进制、资源和安装程序。功能修复与业务测试进入共同源码，平台验收分别运行。平台 Git 分支会让同一业务修改产生两份维护工作，当前工程沿用框架适配边界。
 

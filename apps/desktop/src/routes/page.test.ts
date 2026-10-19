@@ -15,6 +15,7 @@ const bridge = vi.hoisted(() => ({
   invoke: vi.fn(),
   isTauri: vi.fn(() => true),
   refreshCatalog: vi.fn(async () => ({ message: null })),
+  themeChange: vi.fn(async (_args: unknown) => {}),
   eventHandler: null as null | ((event: { payload: DesktopSnapshot }) => void),
   updateHandler: null as null | ((event: { payload: UpdateStatus }) => void),
   updateUnlisten: vi.fn(),
@@ -25,7 +26,7 @@ const bridge = vi.hoisted(() => ({
 
 vi.mock("@tauri-apps/api/app", () => ({ getVersion: vi.fn(async () => "0.1.0") }));
 
-vi.mock("@tauri-apps/api/core", () => ({ invoke: (name: string, args?: unknown) => name === "refresh_catalog_metadata" ? bridge.refreshCatalog() : name === "check_for_updates" ? Promise.resolve({ phase: "idle", autoInstall: true, version: null, notes: null, downloaded: 0, total: null, error: null }) : name === "install_update" ? (bridge.installUpdateCount++, bridge.installUpdatePromise ?? Promise.resolve()) : bridge.invoke(name, args), isTauri: bridge.isTauri, convertFileSrc: (path: string) => `asset://localhost/${path}` }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: (name: string, args?: unknown) => name === "set_desktop_theme" ? bridge.themeChange(args) : name === "refresh_catalog_metadata" ? bridge.refreshCatalog() : name === "check_for_updates" ? Promise.resolve({ phase: "idle", autoInstall: true, version: null, notes: null, downloaded: 0, total: null, error: null }) : name === "install_update" ? (bridge.installUpdateCount++, bridge.installUpdatePromise ?? Promise.resolve()) : bridge.invoke(name, args), isTauri: bridge.isTauri, convertFileSrc: (path: string) => `asset://localhost/${path}` }));
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(async (name: string, handler: (event: { payload: any }) => void) => {
     if (name === "desktop-state-changed") bridge.eventHandler = handler;
@@ -149,6 +150,7 @@ function useOnboardingBridge() {
 }
 
 beforeEach(() => {
+  vi.stubGlobal("matchMedia", vi.fn(() => ({ matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() })));
   vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
   localStorage.clear();
   delete document.documentElement.dataset.theme;
@@ -172,6 +174,7 @@ beforeEach(() => {
   bridge.installUpdatePromise = null;
   bridge.isTauri.mockReturnValue(true);
   bridge.refreshCatalog.mockClear();
+  bridge.themeChange.mockClear();
   bridge.invoke.mockImplementation(async (name: string, args?: { query?: { date: string | null; productId: string | null; limit: number } }) => {
     if (name === "get_desktop_snapshot") return structuredClone(current);
     if (name === "query_messages") return messagePage(args!.query!);
@@ -183,6 +186,69 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe("桌面主流程", () => {
+  it("Mac 原生窗口提供顶部拖动区，普通预览沿用原布局", async () => {
+    vi.spyOn(navigator, "platform", "get").mockReturnValue("MacIntel");
+    const view = render(Page);
+    await screen.findByRole("button", { name: "开始监控" });
+    expect(document.querySelector(".window-drag-region[data-tauri-drag-region]")).not.toBeNull();
+    view.unmount();
+    bridge.isTauri.mockReturnValue(false);
+    render(Page);
+    await waitFor(() => expect(document.documentElement.dataset.nativeShell).toBe("false"));
+    expect(document.querySelector(".window-drag-region")).toBeNull();
+  });
+
+  it("Escape 先取消删除确认并恢复焦点，输入法取消不会关闭商品详情", async () => {
+    current.products = [product];
+    current.channels = [channel];
+    render(Page);
+    await screen.findByRole("button", { name: "查看GR IV HDF详情" });
+    await fireEvent.click(screen.getByRole("button", { name: "查看GR IV HDF详情" }));
+    await screen.findByRole("dialog", { name: "商品详情" });
+    await fireEvent.keyDown(document, { key: "Escape", isComposing: true });
+    expect(screen.getByRole("dialog", { name: "商品详情" })).toBeTruthy();
+    await fireEvent.keyDown(document, { key: "Escape" });
+    await fireEvent.click(screen.getByRole("button", { name: "通知" }));
+    const remove = screen.getByRole("button", { name: "删除工作群" });
+    await fireEvent.click(remove);
+    await screen.findByRole("group", { name: "确认删除工作群" });
+    await fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("group", { name: "确认删除工作群" })).toBeNull());
+    expect(document.activeElement).toBe(remove);
+    expect(current.channels).toHaveLength(1);
+  });
+
+  it("Command 快捷键打开设置和商品搜索，输入法组合输入保持原状", async () => {
+    vi.spyOn(navigator, "platform", "get").mockReturnValue("MacIntel");
+    render(Page);
+    await screen.findByRole("button", { name: "开始监控" });
+    await fireEvent.keyDown(document, { key: ",", metaKey: true });
+    await screen.findByRole("heading", { name: "应用" });
+    await fireEvent.keyDown(document, { key: "f", metaKey: true, isComposing: true });
+    expect(screen.queryByRole("textbox", { name: "搜索名称或 Product ID" })).toBeNull();
+    await fireEvent.keyDown(document, { key: "f", metaKey: true });
+    const search = await screen.findByRole("textbox", { name: "搜索名称或 Product ID" });
+    await waitFor(() => expect(document.activeElement).toBe(search));
+  });
+
+  it("切换页面恢复各自的滚动位置，侧栏支持方向键选择", async () => {
+    const { container } = render(Page);
+    await screen.findByRole("button", { name: "开始监控" });
+    const nav = screen.getByRole("navigation", { name: "主导航" });
+    await fireEvent.click(within(nav).getByRole("button", { name: "其他设置" }));
+    const main = container.querySelector("main")!;
+    main.scrollTop = 230;
+    await fireEvent.click(within(nav).getByRole("button", { name: "通知" }));
+    main.scrollTop = 80;
+    await fireEvent.click(within(nav).getByRole("button", { name: "其他设置" }));
+    await waitFor(() => expect(main.scrollTop).toBe(230));
+    const settings = within(nav).getByRole("button", { name: "其他设置" });
+    settings.focus();
+    await fireEvent.keyDown(settings, { key: "ArrowUp" });
+    await screen.findByRole("heading", { name: "监控产品" });
+    expect(document.activeElement?.textContent).toBe("监控产品");
+  });
+
   it("撤销系统通知权限显示持续提示，检查后恢复授权状态", async () => {
     current.systemNotificationsEnabled = true;
     current.platform!.notificationPermission = "denied";
@@ -787,11 +853,12 @@ describe("桌面主流程", () => {
     render(Page);
     await screen.findByRole("heading", { name: "已停止" });
     expect(document.documentElement.dataset.theme).toBe("dark");
+    expect(bridge.themeChange).toHaveBeenCalledWith({ theme: "dark" });
     await fireEvent.click(screen.getByRole("button", { name: "其他设置" }));
     expect((screen.getByRole("combobox", { name: "外观" }) as HTMLSelectElement).value).toBe("dark");
   });
 
-  it("切换页面回到主栏顶部，同页更新保留滚动位置", async () => {
+  it("切换页面恢复主栏位置，同页更新保留滚动位置", async () => {
     render(Page);
     await screen.findByRole("heading", { name: "已停止" });
     const main = screen.getByRole("main");
@@ -800,7 +867,7 @@ describe("桌面主流程", () => {
     await fireEvent.click(screen.getByRole("button", { name: "速率" }));
     expect(main.scrollTop).toBe(0);
     await fireEvent.click(screen.getByRole("button", { name: "状态" }));
-    expect(main.scrollTop).toBe(0);
+    expect(main.scrollTop).toBe(240);
 
     main.scrollTop = 180;
     bridge.eventHandler?.({ payload: makeSnapshot({

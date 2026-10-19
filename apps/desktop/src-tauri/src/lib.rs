@@ -1,5 +1,7 @@
 mod desktop_backend;
 mod desktop_notifications;
+#[cfg(target_os = "macos")]
+mod native_desktop;
 mod notification_proxy;
 #[cfg(any(
     all(
@@ -246,7 +248,18 @@ pub fn run() {
     if ricoh_monitor_core::system_proxy::windows::run_helper() {
         return;
     }
-    let app = tauri::Builder::default()
+    let context = tauri::generate_context!();
+    #[cfg(debug_assertions)]
+    let context = {
+        let mut context = context;
+        // 调试版与正式版拥有独立的单实例连接及系统窗口偏好。
+        context.config_mut().identifier = "dev.ricohmonitor.debug".into();
+        context
+    };
+    let builder = tauri::Builder::default();
+    #[cfg(target_os = "macos")]
+    let builder = builder.plugin(native_desktop::window_state());
+    let app = builder
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
             show_main(app)
         }))
@@ -294,6 +307,7 @@ pub fn run() {
             desktop_backend::set_proxy_enabled,
             desktop_backend::remove_proxy,
             desktop_backend::set_login_start,
+            desktop_backend::set_desktop_theme,
             desktop_backend::open_logs_directory,
             updates::check_for_updates,
             updates::install_update,
@@ -341,6 +355,8 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            #[cfg(target_os = "macos")]
+            native_desktop::install(app)?;
             #[cfg(target_os = "windows")]
             if let Some(window) = app.get_webview_window("main") {
                 if let Some(monitor) = window.current_monitor()? {
@@ -422,7 +438,7 @@ pub fn run() {
             updates::start_hourly_checks(app.handle().clone());
             Ok(())
         })
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("failed to build RichoMonitor app");
 
     app.run(|app, event| {

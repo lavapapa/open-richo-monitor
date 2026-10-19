@@ -41,6 +41,9 @@
   import ChannelStatus from "$lib/ChannelStatus.svelte";
   import RecipientChip from "$lib/RecipientChip.svelte";
   import "$lib/theme.css";
+  import "$lib/desktop.css";
+  import { pressFeedback } from "$lib/press-feedback";
+  import { allowsContextMenu, desktopShortcut, isMacDesktop, nextSidebarIndex, type DesktopAction } from "$lib/desktop-interactions";
   import ActivityIcon from "@lucide/svelte/icons/activity";
   import Bell from "@lucide/svelte/icons/bell";
   import CalendarDays from "@lucide/svelte/icons/calendar-days";
@@ -117,6 +120,8 @@
 
   let page: Page = "status";
   let mainElement: HTMLElement;
+  let nativeMacChrome = false;
+  const pageScroll = new Map<Page, { main: number; products: number; messages: number }>();
   let snapshot: DesktopSnapshot | null = null;
   let snapshotRequest = 0;
   let firstSnapshot = true;
@@ -144,6 +149,7 @@
   let channelRebindOnMount = false;
   let channelBindingEditor: ChannelBinding;
   let channelToDeleteId: string | null = null;
+  let confirmationOrigin: HTMLButtonElement | null = null;
   let deleteConfirmation: HTMLDivElement;
   let proxyToRemoveId: string | null = null;
   let proxyRemoveConfirmation: HTMLDivElement;
@@ -347,8 +353,13 @@
     if (messageScroll) messageScroll.scrollTop = 0;
   }
 
-  function navigate(next: Page) {
+  async function navigate(next: Page) {
     if (page === next) return;
+    pageScroll.set(page, {
+      main: mainElement?.scrollTop ?? 0,
+      products: mainElement?.querySelector(".status-products")?.scrollTop ?? 0,
+      messages: messageScroll?.scrollTop ?? 0,
+    });
     closeProductDetail(false);
     channelToDeleteId = null;
     proxyToRemoveId = null;
@@ -356,8 +367,40 @@
     if (next === "products" || next === "status" || next === "setup") {
       void desktopApi.refreshCatalog().then(refresh).catch((cause) => { notice = { kind: "error", text: message(cause) }; });
     }
-    if (mainElement) mainElement.scrollTop = 0;
+    await tick();
+    if (page !== next) return;
+    const position = pageScroll.get(next);
+    if (mainElement) mainElement.scrollTop = position?.main ?? 0;
+    const products = mainElement?.querySelector(".status-products");
+    if (products) products.scrollTop = position?.products ?? 0;
+    if (messageScroll) messageScroll.scrollTop = position?.messages ?? 0;
     if (window.innerWidth <= 700) window.scrollTo(0, 0);
+  }
+
+  async function handleDesktopAction(action: DesktopAction) {
+    if (page === "setup" || document.querySelector("dialog[open]")) return;
+    if (action === "find-products") {
+      await navigate("products");
+      const search = mainElement?.querySelector<HTMLInputElement>(".product-search input");
+      search?.focus();
+      search?.select();
+    } else if (action === "check-updates") {
+      await navigate("settings");
+      await checkUpdates();
+    } else await navigate(action);
+  }
+
+  async function handleSidebarKey(event: KeyboardEvent, index: number) {
+    if (event.isComposing || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+    const next = nextSidebarIndex(event.key, index, pages.length);
+    if (next === null) return;
+    event.preventDefault();
+    await navigate(pages[next].id);
+    document.querySelectorAll<HTMLButtonElement>('nav[aria-label="主导航"] button')[next]?.focus();
+  }
+
+  function handleContextMenu(event: MouseEvent) {
+    if (!allowsContextMenu(event.target)) event.preventDefault();
   }
 
   function adopt(next: DesktopSnapshot) {
@@ -395,11 +438,23 @@
     const savedTheme = localStorage.getItem("rm.theme");
     theme = savedTheme === "light" || savedTheme === "dark" ? savedTheme : "system";
     document.documentElement.dataset.theme = theme;
+    void desktopApi.setTheme(theme).catch((cause) => { if (alive) notice = { kind: "error", text: message(cause) }; });
     let stop: (() => void) | undefined;
     let stopErrors: (() => void) | undefined;
     let stopUpdates: (() => void) | undefined;
     let stopPurchase: (() => void) | undefined;
+    let stopDesktopActions: (() => void) | undefined;
     let alive = true;
+    document.documentElement.dataset.platform = isMacDesktop() ? "macos" : "other";
+    document.documentElement.dataset.nativeShell = String(!desktopApi.previewMode);
+    nativeMacChrome = isMacDesktop() && !desktopApi.previewMode;
+    const setWindowFocus = () => document.documentElement.dataset.windowFocused = String(document.hasFocus());
+    setWindowFocus();
+    window.addEventListener("focus", setWindowFocus);
+    window.addEventListener("blur", setWindowFocus);
+    void desktopApi.subscribeDesktopActions((action) => { if (alive) void handleDesktopAction(action); })
+      .then((stop) => { if (alive) stopDesktopActions = stop; else stop(); })
+      .catch((cause) => { if (alive) notice = { kind: "error", text: message(cause) }; });
     void desktopApi.subscribePurchase(() => {
       if (alive && localStorage.getItem("rm.purchase.reviewed") !== "true") {
         if (supportOpen) {
@@ -445,13 +500,14 @@
     messagesCollapsed = localStorage.getItem("rm.messages.collapsed") === "true";
     const dismissPreviewAlert = () => previewAlertOpen = false;
     window.addEventListener("rm-preview-alert-close", dismissPreviewAlert);
-    return () => { alive = false; snapshotRequest++; stop?.(); stopErrors?.(); stopUpdates?.(); stopPurchase?.(); window.removeEventListener("focus", refresh); window.removeEventListener("rm-preview-alert-close", dismissPreviewAlert); clearTimeout(toastTimer); };
+    return () => { alive = false; snapshotRequest++; stop?.(); stopErrors?.(); stopUpdates?.(); stopPurchase?.(); stopDesktopActions?.(); window.removeEventListener("focus", setWindowFocus); window.removeEventListener("blur", setWindowFocus); window.removeEventListener("focus", refresh); window.removeEventListener("rm-preview-alert-close", dismissPreviewAlert); clearTimeout(toastTimer); };
   });
 
   function changeTheme(preference: ThemePreference) {
     theme = preference;
     document.documentElement.dataset.theme = theme;
     localStorage.setItem("rm.theme", theme);
+    void desktopApi.setTheme(theme).catch((cause) => { notice = { kind: "error", text: message(cause) }; });
   }
 
   function message(cause: unknown) {
@@ -625,14 +681,33 @@
     if (restoreFocus) detailOrigin?.focus();
   }
 
-  function handleEscape(event: KeyboardEvent) {
-    if (event.key === "Escape" && !document.querySelector("dialog[open]") && selectedProductId) closeProductDetail();
+  async function handleEscape(event: KeyboardEvent) {
+    if (event.isComposing || event.defaultPrevented) return;
+    const action = desktopShortcut(event);
+    if (action && page !== "setup" && !document.querySelector("dialog[open]")) {
+      event.preventDefault();
+      void handleDesktopAction(action);
+      return;
+    }
+    if (event.key !== "Escape" || document.querySelector("dialog[open]")) return;
+    if (channelToDeleteId || proxyToRemoveId || productToRemoveId) {
+      event.preventDefault();
+      channelToDeleteId = null;
+      proxyToRemoveId = null;
+      productToRemoveId = null;
+      await tick();
+      confirmationOrigin?.focus();
+    } else if (resetOpen) {
+      event.preventDefault();
+      resetOpen = false;
+    } else if (selectedProductId) closeProductDetail();
   }
 
-  async function requestProductRemoval(product: ProductRecord) {
+  async function requestProductRemoval(product: ProductRecord, origin: HTMLButtonElement) {
     if (busy) return;
     if (!product.enabled) { await removeProduct(product.productId); return; }
     productToRemoveId = product.productId;
+    confirmationOrigin = origin;
     await tick();
     productDeleteConfirmation?.focus();
   }
@@ -845,8 +920,9 @@
     }
   }
 
-  async function askRemoveChannel(id: string) {
+  async function askRemoveChannel(id: string, origin: HTMLButtonElement) {
     channelToDeleteId = id;
+    confirmationOrigin = origin;
     await tick();
     deleteConfirmation?.focus();
   }
@@ -856,8 +932,9 @@
     await run(() => desktopApi.removeChannel(id));
   }
 
-  async function askRemoveProxy(id: string) {
+  async function askRemoveProxy(id: string, origin: HTMLButtonElement) {
     proxyToRemoveId = id;
+    confirmationOrigin = origin;
     await tick();
     proxyRemoveConfirmation?.focus();
   }
@@ -1042,15 +1119,16 @@
   <title>{appInfo.productName}</title>
 </svelte:head>
 
-<svelte:document on:keydown={handleEscape} />
-<div class="shell" class:onboarding-shell={page === "setup"}>
+<svelte:document on:keydown={handleEscape} on:contextmenu={handleContextMenu} />
+<div class="shell" class:onboarding-shell={page === "setup"} use:pressFeedback>
+  {#if nativeMacChrome}<div class="window-drag-region" data-tauri-drag-region aria-hidden="true"></div>{/if}
   {#if page !== "setup"}
   <aside class="sidebar">
     <div class="brand-signature"><img class="brand-wordmark" src="/brand/rm-wordmark.svg" alt="RM" /><span class="brand-name">{appInfo.productName}</span></div>
     {#if desktopApi.previewMode}<p class="preview-label">界面预览 · 不连接监控</p>{/if}
     <nav aria-label="主导航">
-      {#each pages as item}
-        <button class:active={page === item.id} aria-current={page === item.id ? "page" : undefined} on:click={() => { navigate(item.id); notice = null; }}>
+      {#each pages as item, index}
+        <button class:active={page === item.id} aria-current={page === item.id ? "page" : undefined} tabindex={page === item.id ? 0 : -1} on:keydown={(event) => handleSidebarKey(event, index)} on:click={() => { navigate(item.id); notice = null; }}>
           <svelte:component this={item.icon} size={17} strokeWidth={1.5} aria-hidden="true" /><span>{item.label}</span>
         </button>
       {/each}
@@ -1068,7 +1146,7 @@
   </aside>
   {/if}
 
-  <main class:status-page={page === "status"} bind:this={mainElement}>
+  <main class:status-page={page === "status"} class:settings-page={page === "settings"} bind:this={mainElement}>
     {#if snapshot?.systemNotificationsEnabled && snapshot.platform?.notificationPermission === "denied"}<p class="notice error" role="alert">系统通知权限已关闭。请在系统设置中开启本应用通知，返回后点击“检查权限”。{#if page !== "notifications"}<button on:click={() => navigate("notifications")}>通知设置</button>{/if}</p>{/if}
     {#if snapshot?.systemNotificationsEnabled && snapshot.platform?.notificationPermissionError && notice?.text !== snapshot.platform.notificationPermissionError}<p class="notice error" role="alert">{snapshot.platform.notificationPermissionError}{#if page !== "notifications"}<button on:click={() => navigate("notifications")}>通知设置</button>{/if}</p>{/if}
     {#if error}<p class="notice error" role="alert">{error} <button on:click={refresh}>重试</button></p>{/if}
@@ -1151,7 +1229,7 @@
                 <button class="icon-button" aria-label={`编辑${item.name}`} title="编辑" on:click={() => editChannel(item)}><Pencil size={16} /></button>
                 {#if item.connectionStatus === "auth_required"}<button class="secondary" on:click={() => editChannel(item)}>重新授权</button>{/if}
                 <button class="icon-button" disabled={!item.enabled && (item.lastTest?.outcome !== "accepted" || item.connectionStatus === "auth_required")} aria-label={`${item.enabled ? "停用" : "启用"}${item.name}`} title={item.enabled ? "停用" : item.lastTest?.outcome === "accepted" ? "启用" : "测试成功后启用"} on:click={() => run(() => desktopApi.setChannelEnabled(item.id, !item.enabled))}>{#if item.enabled}<Pause size={16} />{:else}<Play size={16} />{/if}</button>
-                <button class="icon-button danger" aria-label={`删除${item.name}`} title="删除" on:click={() => askRemoveChannel(item.id)}><Trash2 size={16} /></button>
+                <button class="icon-button danger" aria-label={`删除${item.name}`} title="删除" on:click={(event) => askRemoveChannel(item.id, event.currentTarget)}><Trash2 size={16} /></button>
               </div>
               {#if channelToDeleteId === item.id}
                 <div bind:this={deleteConfirmation} class="channel-delete-confirm" role="group" aria-label={`确认删除${item.name}`} tabindex="-1">
@@ -1184,7 +1262,7 @@
         <section class="group"><div class="section-heading"><h2>代理列表</h2><button class="secondary" aria-label="添加代理" title="添加代理" on:click={openProxyDialog}><Plus size={16} />添加代理</button></div>
           {#if !(snapshot?.proxies.length)}<p class="empty">暂无代理</p>{/if}
           {#each snapshot?.proxies ?? [] as item}
-            <article class="record proxy-list-row"><div><strong>{item.displayAddress}</strong><p>{({ available: "可用", cooldown: "冷却中", auto_disabled: "因连续失败自动停用", manually_disabled: "已手动停用", untested: "尚未测试" } as Record<ProxyRecord["status"], string>)[item.status]}</p></div><div class="actions"><button class="text-button" on:click={() => run(() => desktopApi.testProxy(item.id))}>测试</button><button class="text-button" on:click={() => run(() => desktopApi.setProxyEnabled(item.id, !item.enabled))}>{item.enabled ? "停用" : "启用"}</button><button class="text-button danger" aria-label={`删除代理${item.displayAddress}`} on:click={() => askRemoveProxy(item.id)}>删除</button></div>
+            <article class="record proxy-list-row"><div><strong>{item.displayAddress}</strong><p>{({ available: "可用", cooldown: "冷却中", auto_disabled: "因连续失败自动停用", manually_disabled: "已手动停用", untested: "尚未测试" } as Record<ProxyRecord["status"], string>)[item.status]}</p></div><div class="actions"><button class="text-button" on:click={() => run(() => desktopApi.testProxy(item.id))}>测试</button><button class="text-button" on:click={() => run(() => desktopApi.setProxyEnabled(item.id, !item.enabled))}>{item.enabled ? "停用" : "启用"}</button><button class="text-button danger" aria-label={`删除代理${item.displayAddress}`} on:click={(event) => askRemoveProxy(item.id, event.currentTarget)}>删除</button></div>
               {#if proxyToRemoveId === item.id}
                 <div bind:this={proxyRemoveConfirmation} class="channel-delete-confirm proxy-remove-confirm" role="group" aria-label={`确认删除代理${item.displayAddress}`} tabindex="-1">
                   <span>确定删除代理 {item.displayAddress} 吗？删除后需重新添加。</span>
@@ -1299,7 +1377,7 @@
         <section class="drawer-section"><h4>最近状态记录</h4>{#if detailLoading}<p>正在读取…</p>{:else if detailMessageError}<button class="error-link" on:click={() => openProductDetail(selectedProduct!, detailOrigin)}>读取失败：{detailMessageError}。重试</button>{:else if detailMessages.length}<div class="drawer-records">{#each detailMessages as item}<div><time>{timePrecise(item.at)}</time><span>{item.detail}</span></div>{/each}</div>{:else}<p>暂无状态记录。</p>{/if}</section>
         {#if selectedProduct.runtimeError}<section class="drawer-section"><h4>检查失败</h4><pre class="choice-error">{selectedProduct.runtimeError}</pre></section>{/if}
         <section class="drawer-section"><h4>商品信息</h4>{#if selectedProduct.metadata?.price !== null && selectedProduct.metadata?.price !== undefined}<p>价格 ¥{selectedProduct.metadata.price}{selectedProduct.metadata.unitName ? ` / ${selectedProduct.metadata.unitName}` : ""}</p>{/if}{#if selectedProduct.metadata?.productNo}<p>商品编号 {selectedProduct.metadata.productNo}</p>{/if}{#if selectedProduct.metadata?.isMemberCard}<p>会员卡{selectedProduct.metadata.memberCardDays ? ` · ${selectedProduct.metadata.memberCardDays} 天` : ""}</p>{/if}{#if selectedProduct.metadataUpdatedAt}<p>更新于 {time(selectedProduct.metadataUpdatedAt)}</p>{/if}</section>
-        {#if page === "products"}<section class="drawer-section"><button class="text-button danger" disabled={busy || pendingToggles.has(`product:${selectedProduct.productId}`)} on:click={() => requestProductRemoval(selectedProduct!)}>删除商品</button>
+        {#if page === "products"}<section class="drawer-section"><button class="text-button danger" disabled={busy || pendingToggles.has(`product:${selectedProduct.productId}`)} on:click={(event) => requestProductRemoval(selectedProduct!, event.currentTarget)}>删除商品</button>
           {#if productToRemoveId === selectedProduct.productId}<div bind:this={productDeleteConfirmation} class="channel-delete-confirm" role="group" aria-label={`确认删除${selectedProduct.name}`} tabindex="-1"><span>此商品正在监控。删除后将停止监控并从列表移除。</span><button class="secondary" disabled={busy} on:click={() => productToRemoveId = null}>取消</button><button class="danger-button" disabled={busy} on:click={() => removeProduct(selectedProduct!.productId)}>确认删除</button></div>{/if}
         </section>{/if}
       </div>
@@ -1324,13 +1402,13 @@
   .settings-support { display: flex; justify-content: center; padding: 24px 0 8px; }
   .system-config-scope { display: inline-flex; align-items: center; gap: 6px; margin-top: 12px; font-size: 13px; }
   :global(*) { box-sizing: border-box; }
-  :global(body) { margin: 0; color: var(--foreground); background: var(--canvas); font: 15px/1.45 -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif; -webkit-font-smoothing: antialiased; font-variant-numeric: tabular-nums; }
-  :global(::selection) { color: #fff; background: #a2252d; }
+  :global(body) { margin: 0; color: var(--foreground); background: var(--canvas); font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI Variable", "Segoe UI", "PingFang SC", "Helvetica Neue", sans-serif; -webkit-font-smoothing: antialiased; font-variant-numeric: tabular-nums; }
+  :global(::selection) { color: HighlightText; background: Highlight; }
   :global(input), :global(textarea) { caret-color: var(--accent); }
   :global(button), :global(input), :global(select), :global(textarea) { font: inherit; }
-  :global(button) { cursor: pointer; }
+  :global(button) { cursor: default; }
   :global(button:disabled) { cursor: default; }
-  :global(:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+  :global(:focus-visible) { outline: 3px solid var(--focus-ring); outline-offset: 2px; }
   .shell { height: 100dvh; display: grid; grid-template-columns: 210px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
   .shell.onboarding-shell { grid-template-columns: minmax(0, 1fr); }
   .shell.onboarding-shell main { display: flex; flex-direction: column; padding: 0; height: 100dvh; overflow: hidden; }
@@ -1360,7 +1438,7 @@
   .content { display: grid; align-content: start; gap: 18px; }
   .quiet, small { color: var(--muted); }
   .quiet { font-size: 12px; }
-  .group { min-width: 0; padding: 14px 16px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); }
+  .group { min-width: 0; padding: 16px; border: 1px solid var(--panel-ring); border-radius: 10px; background: var(--surface); }
   .status-products { padding: 0; overflow: hidden; }
   .status-products .text-button { display: inline-flex; align-items: center; gap: 5px; color: var(--foreground); }
   .group > :last-child { margin-bottom: 0; }
@@ -1414,7 +1492,7 @@
   .channel-delete-confirm span { flex: 1 1 220px; }
   .icon-button { display: inline-grid; width: 32px; height: 32px; place-items: center; padding: 0; border: 0; border-radius: 5px; color: var(--muted); background: transparent; }
   .icon-button:hover { background: var(--subtle); color: var(--foreground); }
-  .channel-modal, .proxy-modal { width: min(520px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow: hidden; padding: 22px; border: 1px solid var(--border); border-radius: 7px; color: var(--foreground); background: var(--surface); box-shadow: 0 24px 60px rgb(0 0 0 / 45%); }
+  .channel-modal, .proxy-modal { width: min(520px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow: hidden; padding: 20px; border: 1px solid var(--panel-ring); border-radius: 12px; color: var(--foreground); background: var(--surface); box-shadow: 0 0 0 1px rgb(0 0 0 / 8%), 0 20px 60px rgb(0 0 0 / 28%); }
   .channel-modal { width: min(520px, calc(100vw - 32px)); height: min(500px, calc(100dvh - 32px)); box-sizing: border-box; }
   .channel-modal.configured { height: min(650px, calc(100dvh - 32px)); }
   .proxy-modal { height: min(460px, calc(100dvh - 32px)); }
@@ -1435,9 +1513,9 @@
   .subscriptions label { display: inline-flex; align-items: center; gap: 6px; }
   .modal-actions { display: flex; flex: none; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--hairline); }
   .channel-modal .modal-actions { padding-top: 0; border-top: 0; }
-  .proxy-tabs { display: flex; gap: 4px; margin-bottom: 18px; border-bottom: 1px solid var(--border); }
-  .proxy-tabs button { padding: 10px 13px; color: var(--muted); background: transparent; border: 0; border-bottom: 2px solid transparent; }
-  .proxy-tabs button.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+  .proxy-tabs { display: flex; gap: 2px; margin-bottom: 18px; padding: 3px; border: 1px solid var(--hairline); border-radius: 9px; background: var(--subtle); }
+  .proxy-tabs button { flex: 1; min-height: 28px; padding: 4px 12px; color: var(--muted); background: transparent; border: 0; border-radius: 6px; font-size: 12px; }
+  .proxy-tabs button.active { color: var(--foreground); background: var(--surface); box-shadow: 0 1px 3px rgb(0 0 0 / 12%); font-weight: 600; }
   .proxy-modal .form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .product-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 14px 0 16px; padding: 14px; border: 1px solid var(--border); border-radius: 5px; background: var(--subtle); }
   .toolbar-group { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
@@ -1457,20 +1535,17 @@
   .switch input, input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
   .field { display: grid; gap: 6px; min-width: 0; font-weight: 500; }
   .field small { font-weight: 400; }
-  .field input, .field select, input:not([type="checkbox"]):not([type="radio"]), select, textarea { min-width: 0; min-height: 36px; padding: 7px 10px; color: var(--foreground); background: var(--control); border: 1px solid var(--control-border); border-radius: 5px; color-scheme: inherit; }
-  select { height: 36px; }
+  .field input, .field select, input:not([type="checkbox"]):not([type="radio"]), select, textarea { min-width: 0; min-height: 30px; padding: 5px 9px; color: var(--foreground); background: var(--control); border: 1px solid var(--control-border); border-radius: 6px; color-scheme: inherit; }
+  select { height: 30px; }
   input:not([type="checkbox"]):not([type="radio"]):hover, select:hover, textarea:hover { border-color: var(--control-hover); }
   input::placeholder, textarea::placeholder { color: var(--muted); opacity: 1; }
   textarea { display: block; width: 100%; margin: 10px 0; resize: vertical; }
-  button.primary, button.secondary, button.danger-button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 36px; padding: 7px 12px; border: 1px solid var(--control-border); border-radius: 5px; color: var(--foreground); background: var(--button-bg); font-weight: 550; white-space: nowrap; transition: background 160ms var(--ease-ui), border-color 160ms var(--ease-ui), color 160ms var(--ease-ui), transform 160ms var(--ease-ui); }
-  button.secondary:hover:not(:disabled) { background: var(--button-hover); border-color: var(--control-hover); }
-  button.primary:active:not(:disabled), button.secondary:active:not(:disabled), button.danger-button:active:not(:disabled) { transform: translateY(1px); }
+  button.primary, button.secondary, button.danger-button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 30px; padding: 4px 11px; border: 1px solid var(--control-border); border-radius: 6px; color: var(--foreground); background: var(--button-bg); box-shadow: var(--control-shadow); font-weight: 550; white-space: nowrap; }
   button.primary { border-color: var(--accent); color: white; background: var(--primary-bg); }
-  button.primary:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
   button.primary:disabled { border-color: var(--primary-disabled-border); color: var(--primary-disabled-text); background: var(--primary-disabled-bg); }
   button.secondary:disabled, button.danger-button:disabled { border-color: var(--border); color: var(--disabled-text); background: var(--subtle); }
   button.danger-button, .danger { color: var(--danger); }
-  button.danger-button:hover:not(:disabled) { background: var(--danger-soft); border-color: var(--danger-border); }
+  button:disabled { box-shadow: none; }
   .text-button { padding: 5px 2px; color: var(--accent); border: 0; background: transparent; font-weight: 550; }
   .text-button.danger { color: var(--danger); }
   .text-button:hover { text-decoration: underline; text-underline-offset: 2px; }
@@ -1541,13 +1616,19 @@
   }
   .shell { grid-template-columns: 172px minmax(0, 1fr); }
   .sidebar { padding: 24px 8px 12px; background: var(--sidebar); }
-  .brand-signature { min-height: 64px; margin: 0 10px 12px; gap: 5px; }
+  .brand-signature { flex-direction: column; align-items: flex-start; justify-content: center; min-height: 64px; margin: 0 10px 12px; gap: 5px; }
   .brand-wordmark { width: 90px; }
-  .brand-name { font-size: 10px; }
+  .brand-name { font-size: 10px; font-weight: 400; letter-spacing: -.025em; color: var(--muted); }
   nav { gap: 2px; }
-  nav button { min-height: 34px; padding-inline: 12px; font-size: 13px; }
+  nav button { min-height: 34px; padding-inline: 12px; gap: 14px; border-radius: 5px; font-size: 13px; transition: none; }
   .sidebar-state { padding-top: 8px; font-size: 12px; }
   main { padding: 18px 18px 24px; font-size: 12px; container-type: inline-size; }
+  main.settings-page { background: var(--settings-canvas); padding-top: 24px; }
+  .settings-page > .content { width: 100%; max-width: 860px; margin-inline: auto; gap: 20px; }
+  .settings-page .group > h2 { font-size: 14px; margin-bottom: 14px; }
+  .settings-page .settings-group { padding: 16px 18px 4px; }
+  .settings-page .settings-row { min-height: 52px; padding-block: 10px; }
+  .settings-page .settings-row strong { font-size: 13px; }
   main.status-page::before { display: none; }
   .status-content { gap: 0; }
   .status-line { min-height: 54px; padding: 0 8px 10px 12px; border-bottom: 1px solid var(--border); }
@@ -1558,7 +1639,9 @@
   .status-indicator { display: none; }
   .status-line h2, .product-list-heading h2 { font-size: 21px; line-height: 1.2; font-weight: 650; }
   .status-line p, .product-list-heading p { margin: 6px 0 0; font-size: 14px; }
-  .status-line .primary { min-height: 34px; padding-inline: 12px; }
+  .status-line .primary { min-height: 30px; padding-inline: 11px; }
+  .status-line .primary :global(svg) { stroke-width: 2; }
+  .status-line .primary :global(svg.lucide-play) { translate: 1px 0; }
   .status-workspace { display: grid; grid-template-columns: minmax(0, 1fr) 8px clamp(220px, var(--messages-width), 60%); align-items: start; }
   .status-workspace.messages-collapsed { grid-template-columns: minmax(0, 1fr) 28px; }
   .status-workspace.resizing { cursor: col-resize; user-select: none; }
@@ -1602,7 +1685,7 @@
   .drawer-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; }
   .drawer-heading h2 { margin: 0; font-size: 22px; }
   .drawer-photo { display: block; width: 100%; height: 180px; padding: 8px; border: 0; object-fit: contain; mix-blend-mode: var(--photo-blend); }
-  .drawer-visual { border-radius: var(--photo-radius); background: var(--photo-surface); overflow: hidden; }
+  .drawer-visual { border-radius: var(--photo-radius); background: var(--photo-surface); overflow: hidden; outline: 1px solid var(--photo-outline); outline-offset: -1px; }
   .product-detail-drawer > h3 { margin: 14px 0 7px; font-size: 18px; line-height: 1.3; }
   .drawer-state { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; color: var(--foreground); font-size: 12px; }
   .drawer-section { padding: 12px 0; border-top: 1px solid var(--border); }
@@ -1628,8 +1711,8 @@
   .prominent-test-row { margin-top: 14px; }
   .channel-heading { align-items: center; flex-wrap: wrap; }
   .monitoring-modes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 0; padding: 0; border: 0; }
-  .mode-choice { min-width: 0; padding: 14px; border: 1px solid var(--control-border); border-radius: 8px; background: var(--button-bg); cursor: pointer; }
-  .mode-choice.chosen { border-color: var(--accent); background: var(--accent-soft); }
+  .mode-choice { min-width: 0; padding: 14px; border: 1px solid var(--control-border); border-radius: 8px; background: var(--button-bg); cursor: default; }
+  .mode-choice.chosen { border-color: var(--accent); background: var(--surface); }
   .mode-choice-title { display: flex; align-items: baseline; gap: 8px; font-size: 13px; }
   .mode-choice input { accent-color: var(--accent); }
   .mode-choice p { color: var(--muted); font-size: 11px; line-height: 1.6; }

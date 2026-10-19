@@ -67,7 +67,7 @@
 <style>
   .update-sidebar { margin: 0 2px 8px; }
   .compact { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 30px; padding: 5px 6px; font: inherit; font-size: 12px; line-height: 1.5; text-align: left; color: var(--muted); }
-  button.compact { border: 0; border-radius: 5px; background: transparent; color: var(--accent-text); cursor: pointer; }
+  button.compact { border: 0; border-radius: 5px; background: transparent; color: var(--accent-text); cursor: default; }
   button.compact:hover { background: var(--accent-soft); }
   button.compact:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .compact :global(svg) { flex: none; }
@@ -78,7 +78,7 @@
   p { margin: 3px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
   .failure { color: var(--danger); }
   details { margin-top: 6px; font-size: 12px; }
-  summary { color: var(--muted); cursor: pointer; }
+  summary { color: var(--muted); cursor: default; }
   pre { max-width: min(680px, 70vw); margin: 6px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
   .actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
   dialog { width: min(440px, calc(100vw - 32px)); padding: 24px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); color: var(--foreground); }

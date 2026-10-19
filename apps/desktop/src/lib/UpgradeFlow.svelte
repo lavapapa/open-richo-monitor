@@ -59,9 +59,9 @@
   time { font-size: 11px; color: var(--muted); }
   p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
   footer { flex: none; display: flex; justify-content: space-between; align-items: center; gap: 15px; padding-top: 18px; }
-  label { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
+  label { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: default; }
   input { width: 15px; height: 15px; margin: 0; accent-color: var(--accent); }
-  button { padding: 9px 17px; border: 1px solid var(--accent); border-radius: 7px; background: var(--accent); color: white; font: inherit; font-size: 13px; cursor: pointer; }
+  button { padding: 9px 17px; border: 1px solid var(--accent); border-radius: 7px; background: var(--accent); color: white; font: inherit; font-size: 13px; cursor: default; }
   button:disabled { opacity: .5; cursor: default; }
   input:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
   .error { color: var(--danger); margin-top: 12px; }

@@ -132,7 +132,7 @@
   .numbers small { display: block; margin-bottom: 8px; font-size: 15px; }
   .numbers strong { display: block; font-size: clamp(24px, 3vw, 42px); letter-spacing: -.04em; }
   .actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 28px; }
-  button { font: inherit; cursor: pointer; transition: opacity 160ms; }
+  button { font: inherit; cursor: default; transition: opacity 160ms; }
   button:hover { opacity: .8; }
   button:focus-visible { outline: 3px solid #271b13; outline-offset: 4px; }
   button:disabled { opacity: .5; cursor: default; }

@@ -26,7 +26,7 @@
   .weekday-row { display: flex; align-items: center; gap: 12px; }
   .weekday-label { flex: none; color: var(--foreground); font-size: 12px; font-weight: 600; }
   .day-picker { display: flex; flex-wrap: wrap; gap: 6px; }
-  .day-picker label { position: relative; cursor: pointer; }
+  .day-picker label { position: relative; cursor: default; }
   .day-picker input { position: absolute; opacity: 0; width: 1px; height: 1px; }
   .day-picker span { box-sizing: border-box; width: 34px; height: 32px; display: grid; place-items: center; border: 1px solid var(--border); border-radius: 4px; background: var(--surface); color: var(--foreground); font-size: 12px; font-weight: 500; transition: background 160ms var(--ease-ui), border-color 160ms var(--ease-ui); }
   .day-picker label:hover span { background: var(--subtle); }

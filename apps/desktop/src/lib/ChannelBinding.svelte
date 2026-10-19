@@ -317,7 +317,7 @@
   .binding { margin: 0; }
   .binding p { margin: 10px 0; font-size: 13px; line-height: 1.5; }
   .qr-stage { min-height: 310px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; text-align: center; }
-  .qr-refresh { display: grid; place-items: center; width: 58px; height: 58px; border: 0; border-radius: 50%; color: var(--muted); background: var(--subtle); cursor: pointer; }
+  .qr-refresh { display: grid; place-items: center; width: 58px; height: 58px; border: 0; border-radius: 50%; color: var(--muted); background: var(--subtle); cursor: default; }
   .qr-refresh:hover { color: var(--foreground); background: var(--button-hover); }
   .spinner { width: 28px; height: 28px; border: 3px solid var(--border); border-top-color: var(--foreground); border-radius: 50%; animation: spin 900ms linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
@@ -340,17 +340,17 @@
   .pairing-mark { display: inline-flex; color: var(--muted); }
   .pairing-mark.success { color: var(--positive); }
   .binding-qr { display: block; max-width: 100%; height: auto; margin: 0 auto; border-radius: 5px; }
-  .binding-retry { padding: 4px 0; border: 0; background: transparent; color: var(--muted); cursor: pointer; font: inherit; font-size: 12px; }
+  .binding-retry { padding: 4px 0; border: 0; background: transparent; color: var(--muted); cursor: default; font: inherit; font-size: 12px; }
   .binding-retry:hover { color: var(--foreground); }
   .binding-field { display: grid; gap: 6px; margin: 12px 0; font-size: 13px; }
   .binding-targets { display: grid; gap: 10px; margin: 12px 0; padding: 0; border: 0; min-width: 0; font-size: 13px; }
   .personal-targets { width: fit-content; max-width: 100%; margin: 16px auto 0; }
-  .binding-targets label { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+  .binding-targets label { display: flex; align-items: center; gap: 8px; cursor: default; }
   .target-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
   .target-row label { flex: 1; min-width: 0; }
   .target-row .target-name { flex: 1 0 100%; }
   input:not([type="checkbox"]), select { width: 100%; min-height: 34px; box-sizing: border-box; padding: 6px 9px; color: var(--foreground); background: var(--surface); border: 1px solid var(--control-border); border-radius: 5px; font: inherit; }
-  details { font-size: 12px; color: var(--muted); } summary { cursor: pointer; }
+  details { font-size: 12px; color: var(--muted); } summary { cursor: default; }
   .binding-message { color: var(--muted); }
   .scan-tools { display: flex; align-items: baseline; justify-content: center; gap: 10px; max-width: 100%; }
   .scan-tools p, .scan-tools button { font-size: 12px; }

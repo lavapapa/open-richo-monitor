@@ -49,7 +49,7 @@
   a { color: var(--foreground); text-decoration: none; font-weight: 550; }
   a:hover { color: var(--accent); text-decoration: underline; }
   a:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
-  .choice { display: flex; align-items: center; gap: 9px; margin-top: 18px; font-size: 13px; line-height: 1.6; cursor: pointer; }
+  .choice { display: flex; align-items: center; gap: 9px; margin-top: 18px; font-size: 13px; line-height: 1.6; cursor: default; }
   .compact .choice { margin: 0; color: var(--muted); font-size: 12px; }
   input { width: 15px; height: 15px; flex: none; margin: 0; accent-color: var(--accent); }
   [role="alert"] { font-size: 12px; color: var(--danger); }

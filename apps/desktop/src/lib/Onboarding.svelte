@@ -161,7 +161,7 @@
   h2 { margin: 0; font-size: 16px; font-weight: 600; }
   .muted, small { color: var(--muted); font-size: 12px; line-height: 1.6; }
   .products { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; min-width: 0; padding: 0; margin: 0; border: 0; }
-  input[type="checkbox"] { flex: none; width: 16px; height: 16px; margin: 0; accent-color: var(--accent); cursor: pointer; }
+  input[type="checkbox"] { flex: none; width: 16px; height: 16px; margin: 0; accent-color: var(--accent); cursor: default; }
   .notification-section { padding: 22px 0; border-top: 1px solid var(--border); }
   .notification-section:first-of-type { padding-top: 0; border-top: 0; }
   .system-heading { justify-content: flex-start; }
@@ -177,13 +177,12 @@
   .completion-title { margin: 0; font-size: 17px; line-height: 1.5; }
   .completion-message { margin: 6px 0 0; color: var(--muted); font-size: 13px; line-height: 1.7; }
   .startup-options { display: flex; flex-wrap: wrap; gap: 10px 22px; justify-content: center; margin: 16px 0 auto; text-align: left; }
-  .login-start { display: flex; align-items: center; gap: 10px; font-size: 14px; cursor: pointer; }
+  .login-start { display: flex; align-items: center; gap: 10px; font-size: 14px; cursor: default; }
   .error { color: var(--danger); }
   .error { margin: 16px 0 0; font-size: 12px; line-height: 1.6; }
   .step-actions { margin-top: 20px; }
-  button { display: inline-flex; align-items: center; justify-content: center; min-height: 36px; padding: 7px 14px; border: 1px solid var(--border); border-radius: 5px; background: var(--button-bg); color: var(--foreground); font: inherit; font-size: 12px; cursor: pointer; transition: background 160ms var(--ease-ui); }
+  button { display: inline-flex; align-items: center; justify-content: center; min-height: 36px; padding: 7px 14px; border: 1px solid var(--border); border-radius: 5px; background: var(--button-bg); color: var(--foreground); font: inherit; font-size: 12px; cursor: default; transition: background 160ms var(--ease-ui); }
   button:hover { background: var(--button-hover); }
-  button:active { transform: translateY(1px); }
   button:disabled { color: var(--disabled-text); cursor: default; transform: none; }
   .primary { min-width: 104px; background: var(--primary-bg); border-color: var(--primary-bg); color: white; font-weight: 550; }
   .primary:hover { background: var(--accent-hover); }

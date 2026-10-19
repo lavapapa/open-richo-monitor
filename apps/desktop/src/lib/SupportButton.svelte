@@ -23,13 +23,11 @@
   .support { text-align: center; }
   .caption { margin: 0 0 14px; color: var(--muted); font-size: 13px; line-height: 1.65; text-wrap: pretty; }
   .actions { display: flex; align-items: center; justify-content: center; gap: 16px; flex-wrap: wrap; }
-  button { display: inline-flex; gap: 8px; align-items: center; justify-content: center; min-height: 40px; font: inherit; font-size: 14px; cursor: pointer; transition: transform 160ms ease, background 160ms ease, box-shadow 160ms ease; }
+  button { display: inline-flex; gap: 8px; align-items: center; justify-content: center; min-height: 36px; font: inherit; font-size: 13px; cursor: default; }
   .star-button { padding: 9px 4px; border: 0; border-radius: 8px; background: transparent; color: var(--foreground); }
-  .star-button :global(svg) { color: #ae791e; transition: transform 180ms ease, fill 180ms ease; }
-  .star-button:hover :global(svg) { fill: #f7cd67; transform: rotate(-12deg); }
+  .star-button :global(svg) { color: #ae791e; }
+  .star-button:hover :global(svg) { fill: #f7cd67; }
   .support-button { padding: 9px 16px; border: 1px solid #e7aa64; border-radius: 12px; background: linear-gradient(180deg, #ffe3ac, #ffd18b); color: #653914; font-weight: 600; box-shadow: inset 0 1px 0 #fff9, 0 2px 0 #9a58191c; }
-  .support-button:hover { background: linear-gradient(180deg, #ffe9bf, #ffce7f); box-shadow: inset 0 1px 0 #fff9, 0 4px 10px #9a581924; transform: translateY(-1px); }
-  button:active { transform: translateY(1px); }
   button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
   [role="alert"] { color: var(--danger); font-size: 13px; }
   @media (prefers-reduced-motion: reduce) { button, .star-button :global(svg) { transition: none; } .star-button:hover :global(svg), .support-button:hover, button:active { transform: none; } }

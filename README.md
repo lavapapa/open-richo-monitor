@@ -25,9 +25,9 @@
 <!-- downloads:start -->
 | 你的电脑 | 点击下载 | 国内镜像 |
 | --- | --- | --- |
-| Mac · Apple Silicon（M1、M2、M3、M4 等） | [下载 Mac Apple Silicon 版](https://github.com/lavapapa/open-richo-monitor/releases/download/v0.1.6/RichoMonitor_0.1.6_aarch64.dmg) | [Gitee 下载](https://gitee.com/marvinfore/open-richo-monitor/releases/download/v0.1.6/RichoMonitor_0.1.6_aarch64.dmg) |
-| Mac · Intel | [下载 Mac Intel 版](https://github.com/lavapapa/open-richo-monitor/releases/download/v0.1.6/RichoMonitor_0.1.6_x64.dmg) | [Gitee 下载](https://gitee.com/marvinfore/open-richo-monitor/releases/download/v0.1.6/RichoMonitor_0.1.6_x64.dmg) |
-| Windows · 64 位 | [下载 Windows 版](https://github.com/lavapapa/open-richo-monitor/releases/download/v0.1.6/RichoMonitor_0.1.6_x64-setup.exe) | [Gitee 下载](https://gitee.com/marvinfore/open-richo-monitor/releases/download/v0.1.6/RichoMonitor_0.1.6_x64-setup.exe) |
+| Mac · Apple Silicon（M1、M2、M3、M4 等） | [下载 Mac Apple Silicon 版](https://github.com/lavapapa/open-richo-monitor/releases/download/v0.1.7/RichoMonitor_0.1.7_aarch64.dmg) | [Gitee 下载](https://gitee.com/marvinfore/open-richo-monitor/releases/download/v0.1.7/RichoMonitor_0.1.7_aarch64.dmg) |
+| Mac · Intel | [下载 Mac Intel 版](https://github.com/lavapapa/open-richo-monitor/releases/download/v0.1.7/RichoMonitor_0.1.7_x64.dmg) | [Gitee 下载](https://gitee.com/marvinfore/open-richo-monitor/releases/download/v0.1.7/RichoMonitor_0.1.7_x64.dmg) |
+| Windows · 64 位 | [下载 Windows 版](https://github.com/lavapapa/open-richo-monitor/releases/download/v0.1.7/RichoMonitor_0.1.7_x64-setup.exe) | [Gitee 下载](https://gitee.com/marvinfore/open-richo-monitor/releases/download/v0.1.7/RichoMonitor_0.1.7_x64-setup.exe) |
 <!-- downloads:end -->
 
 - **Mac 用户不知道下载哪个版本？** 打开“关于本机”：Apple M 系列选 Apple Silicon，Intel 处理器选 Intel。

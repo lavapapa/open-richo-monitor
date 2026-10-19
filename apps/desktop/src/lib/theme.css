@@ -24,7 +24,11 @@
   --control-hover: rgb(80 92 105 / 40%);
   --photo-surface: #fff;
   --photo-blend: normal;
-  --photo-radius: 0px;
+  --photo-radius: 8px;
+  --photo-outline: oklch(0 0 0 / 0.1);
+  --settings-canvas: #f5f5f7;
+  --panel-ring: rgb(0 0 0 / 7%);
+  --control-shadow: 0 1px 2px rgb(0 0 0 / 7%), inset 0 1px 0 rgb(255 255 255 / 80%);
   --button-bg: #f4f5f6;
   --button-hover: #e6e9ec;
   --primary-disabled-bg: #ecdadd;
@@ -64,7 +68,11 @@
   --control-hover: rgb(200 212 224 / 40%);
   --photo-surface: #d5d9dd;
   --photo-blend: multiply;
-  --photo-radius: 6px;
+  --photo-radius: 8px;
+  --photo-outline: oklch(1 0 0 / 0.1);
+  --settings-canvas: #151618;
+  --panel-ring: rgb(255 255 255 / 9%);
+  --control-shadow: 0 1px 2px rgb(0 0 0 / 14%), inset 0 1px 0 rgb(255 255 255 / 5%);
   --button-bg: #22272b;
   --button-hover: #30363b;
   --primary-disabled-bg: #4b2a2e;
@@ -105,7 +113,11 @@
     --control-hover: rgb(200 212 224 / 40%);
     --photo-surface: #d5d9dd;
     --photo-blend: multiply;
-    --photo-radius: 6px;
+    --photo-radius: 8px;
+    --photo-outline: oklch(1 0 0 / 0.1);
+    --settings-canvas: #151618;
+    --panel-ring: rgb(255 255 255 / 9%);
+    --control-shadow: 0 1px 2px rgb(0 0 0 / 14%), inset 0 1px 0 rgb(255 255 255 / 5%);
     --button-bg: #22272b;
     --button-hover: #30363b;
     --primary-disabled-bg: #4b2a2e;

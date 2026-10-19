@@ -7,3 +7,30 @@ src/lib/catalog-preview.json 的 metadata.imageUrl。图片与商品品牌归
 通知平台图标来自各平台官方资源，用于识别通知渠道，来源记录见
 static/providers/sources.json。GitHub 标识来自其官方品牌资源。
 各品牌商标与图标归各自权利人持有，本应用与理光及通知平台无隶属关系。
+
+按钮触感模型
+
+src/lib/press-feedback.ts 中的临界阻尼解析式来自 Feel v0.2 的 response。
+来源：https://github.com/diip3sh/feel
+
+MIT License
+
+Copyright (c) 2026 diip3sh
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

@@ -51,7 +51,7 @@
 
 <style>
   .product-tile { position: relative; min-width: 0; padding: 8px 10px 10px; background: var(--canvas); }
-  .product-photo { position: relative; display: block; width: 100%; height: 134px; padding: 0; border: 0; border-radius: var(--photo-radius); overflow: hidden; background: var(--photo-surface); }
+  .product-photo { position: relative; display: block; width: 100%; height: 134px; padding: 0; border: 0; border-radius: var(--photo-radius); overflow: hidden; background: var(--photo-surface); outline: 1px solid var(--photo-outline); outline-offset: -1px; }
   .product-photo img { position: absolute; inset: 6px; display: block; width: calc(100% - 12px); height: calc(100% - 12px); object-fit: contain; mix-blend-mode: var(--photo-blend); }
   .product-photo:has(.photo-empty) { background: var(--subtle); }
   .product-tile.selected:not(.compact) .product-photo { border-bottom: 2px solid var(--accent); }

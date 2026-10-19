@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "macos-window-chrome",
+  "description": "macOS 主窗口顶部拖动区域",
+  "platforms": ["macOS"],
+  "windows": ["main"],
+  "permissions": ["core:window:allow-start-dragging"]
+}

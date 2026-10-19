@@ -1,0 +1,46 @@
+:root {
+  --focus-ring: Highlight;
+  --sidebar-material: rgb(236 238 240 / 68%);
+}
+:root[data-theme="dark"] { --sidebar-material: rgb(27 29 32 / 62%); }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]):not([data-theme="dark"]) { --sidebar-material: rgb(27 29 32 / 62%); }
+}
+body {
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+input, textarea, [contenteditable="true"], [data-selectable], pre, code,
+.message-table, .message-table *, .drawer-records, .drawer-records * {
+  user-select: text;
+  -webkit-user-select: text;
+}
+input, textarea { cursor: text; }
+input[type="checkbox"], input[type="radio"] { cursor: default; }
+img, a { -webkit-user-drag: none; }
+:root[data-platform="macos"] :focus-visible { outline-color: -webkit-focus-ring-color; }
+:root[data-platform="macos"][data-native-shell="true"] body { background: transparent; }
+:root[data-platform="macos"][data-native-shell="true"] .sidebar { background: var(--sidebar-material); }
+.window-drag-region { position: fixed; z-index: 10; inset: 0 0 auto; height: 32px; }
+:root[data-platform="macos"][data-native-shell="true"] .sidebar { padding-top: 52px; }
+/* 同色顶部留白覆盖原生底色，滚动视口保持在拖动区下方。 */
+:root[data-platform="macos"][data-native-shell="true"] main { border-top: 32px solid var(--canvas); padding-top: 18px; }
+:root[data-platform="macos"][data-native-shell="true"] main.settings-page { border-top-color: var(--settings-canvas); padding-top: 24px; }
+:root[data-platform="macos"][data-native-shell="true"] .shell.onboarding-shell main { padding-top: 0; }
+:root[data-platform="macos"][data-native-shell="true"] .product-detail-drawer { top: 32px; padding-top: 24px; }
+:root[data-platform="macos"][data-native-shell="true"] .toast { top: 50px; }
+:root[data-window-focused="false"] nav button.active {
+  background: var(--subtle);
+  color: var(--foreground);
+}
+:root[data-window-focused="false"] nav button.active svg { color: var(--muted); }
+button:not(:disabled):active { filter: brightness(.92); }
+button:disabled { filter: none; }
+main, .status-products, .message-scroll, .modal-body { overscroll-behavior: contain; }
+@media (prefers-contrast: more) {
+  :root { --control-border: currentColor; }
+}
+@media (prefers-reduced-transparency: reduce) {
+  :root[data-platform="macos"][data-native-shell="true"] .sidebar { background: var(--sidebar); }
+}

@@ -707,6 +707,14 @@ pub async fn remove_proxy(
 }
 
 #[tauri::command]
+pub fn set_desktop_theme(
+    window: tauri::WebviewWindow,
+    theme: Option<tauri::Theme>,
+) -> Result<(), String> {
+    window.set_theme(theme).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 pub fn set_login_start(
     backend: State<'_, std::sync::Arc<DesktopBackend>>,
     enabled: bool,

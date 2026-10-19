@@ -56,7 +56,7 @@
   h2 { margin: 0 0 12px; font-size: 20px; }
   p { color: var(--muted); line-height: 1.6; }
   .choices { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin: 22px 0; }
-  button { display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--border); background: var(--surface); color: inherit; border-radius: 8px; padding: 9px 13px; font: inherit; cursor: pointer; }
+  button { display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--border); background: var(--surface); color: inherit; border-radius: 8px; padding: 9px 13px; font: inherit; cursor: default; }
   button:disabled { opacity: .5; cursor: default; }
   button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
   footer { display: flex; justify-content: flex-end; gap: 12px; margin-top: 24px; }

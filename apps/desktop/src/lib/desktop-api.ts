@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import catalogPreview from "$lib/catalog-preview.json";
 import support from "$lib/support.json";
+import type { DesktopAction } from "$lib/desktop-interactions";
 
 export type Weekday = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
 export type RuntimeState =
@@ -537,6 +538,9 @@ function backendErrorMessage(error: unknown): string | null {
 
 export const desktopApi = {
   get previewMode() { return isPreview(); },
+  setTheme: (theme: "system" | "light" | "dark") => isPreview()
+    ? Promise.resolve()
+    : invoke<void>("set_desktop_theme", { theme: theme === "system" ? null : theme }),
   getSnapshot: () => isPreview()
     ? Promise.resolve(structuredClone(previewSnapshot))
     : command<DesktopSnapshot>("get_desktop_snapshot"),
@@ -557,6 +561,11 @@ export const desktopApi = {
     if (isPreview()) return Promise.resolve(() => {});
     requireDesktop();
     return listen<string>("desktop-error", ({ payload }) => handler(payload));
+  },
+
+  subscribeDesktopActions: (handler: (action: DesktopAction) => void): Promise<UnlistenFn> => {
+    if (isPreview()) return Promise.resolve(() => {});
+    return listen<DesktopAction>("desktop-action", ({ payload }) => handler(payload));
   },
 
   subscribeUpdates: (handler: (status: UpdateStatus) => void): Promise<UnlistenFn> => {

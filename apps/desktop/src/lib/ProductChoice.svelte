@@ -20,17 +20,17 @@
 </div>
 
 <style>
-  .product-option { box-sizing: border-box; display: flex; align-items: center; gap: 10px; min-width: 0; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); transition: border-color 160ms var(--ease-ui), background 160ms var(--ease-ui); }
+  .product-option { box-sizing: border-box; display: flex; align-items: center; gap: 10px; min-width: 0; padding: 10px; border: 1px solid var(--panel-ring); border-radius: 10px; background: var(--surface); }
   .product-option:hover { background: var(--subtle); }
   .product-option.selected { border-color: var(--accent); }
-  input[type="checkbox"] { flex: none; width: 16px; height: 16px; margin: 0; accent-color: var(--accent); cursor: pointer; }
-  .product-image { flex: none; display: grid; place-items: center; width: 52px; height: 52px; border-radius: 4px; overflow: hidden; background: var(--photo-surface); }
+  input[type="checkbox"] { flex: none; width: 16px; height: 16px; margin: 0; accent-color: var(--accent); cursor: default; }
+  .product-image { flex: none; display: grid; place-items: center; width: 52px; height: 52px; border-radius: 4px; overflow: hidden; background: var(--photo-surface); outline: 1px solid var(--photo-outline); outline-offset: -1px; }
   .product-image img { width: 100%; height: 100%; object-fit: contain; mix-blend-mode: var(--photo-blend); }
   .image-placeholder { color: var(--muted); font-size: 15px; font-weight: 600; letter-spacing: -1px; opacity: .5; }
   .product-copy { display: grid; flex: 1; min-width: 0; gap: 4px; }
   .product-copy strong, .product-name { color: var(--foreground); font-size: 12px; font-weight: 550; line-height: 1.5; overflow-wrap: anywhere; }
-  .product-copy label { cursor: pointer; }
-  .product-name { padding: 0; min-height: 0; border: 0; background: transparent; text-align: left; font-family: inherit; cursor: pointer; }
+  .product-copy label { cursor: default; }
+  .product-name { padding: 0; min-height: 0; border: 0; background: transparent; text-align: left; font-family: inherit; cursor: default; }
   .product-name:hover { color: var(--accent); }
   .product-actions { display: flex; align-items: center; gap: 6px; flex: none; }
   button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
