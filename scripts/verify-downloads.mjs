@@ -5,11 +5,19 @@ import { verifyManifest } from './verify-release.mjs';
 
 export async function verifySource(source, fetcher = fetch) {
   async function request(url, method) {
-    const response = await fetcher(url, { method, signal: AbortSignal.timeout(30000) });
-    assert.ok(response.ok, `HTTP ${response.status}：${url}`);
+    let response;
+    try {
+      response = await fetcher(url, { method, signal: AbortSignal.timeout(30000) });
+    } catch (error) {
+      throw new Error(`${method} ${url}：${error.message}`, { cause: error });
+    }
+    assert.ok(response.ok, `${method} HTTP ${response.status}：${url}`);
     return response;
   }
-  const manifest = await (await request(`${source}/releases/download/latest/latest.json`, 'GET')).json();
+  const manifestPath = new URL(source).hostname === 'github.com'
+    ? 'releases/latest/download/latest.json'
+    : 'releases/download/latest/latest.json';
+  const manifest = await (await request(`${source}/${manifestPath}`, 'GET')).json();
   assert.match(manifest.version, /^\d+\.\d+\.\d+$/, '公开清单缺少正式版本号');
   const config = { productName: 'RichoMonitor', version: manifest.version };
   const base = `${source}/releases/download/v${manifest.version}`;

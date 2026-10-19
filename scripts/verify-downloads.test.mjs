@@ -17,6 +17,7 @@ test('公开检查逐一检查三平台安装与更新地址，拒绝缺失或 H
     return new Response(null, { headers: { 'content-type': html ? 'text/html' : 'application/octet-stream' } });
   };
   assert.deepEqual(await verifySource(source, fetcher), { source, version, files: 5 });
+  assert.equal(requests[0].url, `${source}/releases/latest/download/latest.json`);
   assert.equal(requests.filter(r => r.method === 'HEAD').length, 5);
   delete content.platforms['darwin-x86_64'];
   await assert.rejects(verifySource(source, fetcher), /三个平台/);
@@ -25,4 +26,23 @@ test('公开检查逐一检查三平台安装与更新地址，拒绝缺失或 H
 });
 test('公开检查保留网络失败，错误中包含出问题的下载地址', async () => {
   await assert.rejects(verifySource(source, async () => new Response('not found', { status: 404 })), /404.*latest.json/);
+});
+test('Gitee 使用独立的 latest 标签清单地址', async () => {
+  const mirror = 'https://gitee.com/marvinfore/open-richo-monitor';
+  const content = JSON.parse(JSON.stringify(manifest()).replaceAll(source, mirror));
+  const requests = [];
+  await verifySource(mirror, async (url, options) => {
+    requests.push({ url, method: options.method });
+    return options.method === 'GET' ? new Response(JSON.stringify(content)) : new Response(null);
+  });
+  assert.equal(requests[0].url, `${mirror}/releases/download/latest/latest.json`);
+});
+test('网络异常保留实际请求方法、地址和原因', async () => {
+  await assert.rejects(verifySource(source, async () => { throw new Error('fetch failed'); }), {
+    message: `GET ${source}/releases/latest/download/latest.json：fetch failed`,
+  });
+  await assert.rejects(verifySource(source, async (_url, options) => {
+    if (options.method === 'GET') return new Response(JSON.stringify(manifest()));
+    throw new Error('connection closed');
+  }), /HEAD https:\/\/github\.com\/lavapapa\/open-richo-monitor\/releases\/download\/v1\.2\.3\/RichoMonitor_1\.2\.3_.*：connection closed/);
 });
