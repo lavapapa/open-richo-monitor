@@ -27,7 +27,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: regression-${{ github.ref }}
+  group: regression-${{ github.ref }}-${{ inputs.platform || 'all' }}
   cancel-in-progress: true
 jobs:
   regression:

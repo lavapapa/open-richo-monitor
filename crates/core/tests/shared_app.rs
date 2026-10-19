@@ -568,12 +568,14 @@ async fn product_scan_can_pause_resume_and_cancel_through_another_app_instance()
     .await;
     let cancelled_snapshot = match cancelled_snapshot {
         Ok(snapshot) => snapshot,
-        Err(error) => panic!(
-            "扫描取消应广播给原应用订阅者: {error:?}; 收到={received_scan_states:?}; 当前={:?}; 请求次数={}; 主任务结束={}",
-            app.snapshot().await.unwrap(),
-            client.0.load(Ordering::Relaxed),
-            runner.is_finished(),
-        ),
+        Err(error) => {
+            let latest = app.snapshot().await.map(|snapshot| (snapshot.runtime, snapshot.scan));
+            let terminal = tokio::time::timeout(Duration::from_secs(1), app.wait_for_scan()).await;
+            panic!(
+                "扫描取消应广播给原应用订阅者: {error:?}; 控制返回={cancelled:?}; 收到={received_scan_states:?}; 当前={latest:?}; 扫描终态={terminal:?}; 请求次数={}; 主任务结束={}",
+                client.0.load(Ordering::Relaxed), runner.is_finished(),
+            );
+        }
     };
     assert_eq!(
         cancelled_snapshot.scan.as_ref().unwrap().status,
