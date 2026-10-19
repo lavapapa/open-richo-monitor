@@ -18,6 +18,12 @@ on:
       - '.github/workflows/**'
       - 'LICENSE'
   workflow_dispatch:
+    inputs:
+      platform:
+        description: 原生回归平台
+        type: choice
+        default: all
+        options: [all, macos-15, macos-15-intel, windows-2022]
 permissions:
   contents: read
 concurrency:
@@ -28,7 +34,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-15, macos-15-intel, windows-2022]
+        os: ${{ fromJSON(inputs.platform && inputs.platform != 'all' && format('["{0}"]', inputs.platform) || '["macos-15","macos-15-intel","windows-2022"]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     env:

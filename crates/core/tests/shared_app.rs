@@ -551,9 +551,11 @@ async fn product_scan_can_pause_resume_and_cancel_through_another_app_instance()
         .await
         .unwrap();
     assert_eq!(cancelled.status, ScanStatus::Cancelled);
+    let mut received_scan_states = Vec::new();
     let cancelled_snapshot = tokio::time::timeout(Duration::from_secs(3), async {
         loop {
             let snapshot = snapshots.recv().await.unwrap();
+            received_scan_states.push(snapshot.scan.clone());
             if snapshot
                 .scan
                 .as_ref()
@@ -564,7 +566,15 @@ async fn product_scan_can_pause_resume_and_cancel_through_another_app_instance()
         }
     })
     .await;
-    let cancelled_snapshot = cancelled_snapshot.expect("扫描取消应广播给原应用订阅者");
+    let cancelled_snapshot = match cancelled_snapshot {
+        Ok(snapshot) => snapshot,
+        Err(error) => panic!(
+            "扫描取消应广播给原应用订阅者: {error:?}; 收到={received_scan_states:?}; 当前={:?}; 请求次数={}; 主任务结束={}",
+            app.snapshot().await.unwrap(),
+            client.0.load(Ordering::Relaxed),
+            runner.is_finished(),
+        ),
+    };
     assert_eq!(
         cancelled_snapshot.scan.as_ref().unwrap().status,
         ScanStatus::Cancelled
