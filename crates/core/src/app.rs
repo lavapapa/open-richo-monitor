@@ -3601,6 +3601,10 @@ impl MonitorApp {
             }
             let _ = self.snapshot().await;
         }
+        // 外部取消也会结束请求等待；退出任务时同步终态，不依赖主循环下一次轮询。
+        if self.call(|db| db.scan_checkpoint()).await?.is_none() {
+            self.cancel_missing_scan(scan_id).await;
+        }
         Ok(())
     }
 
@@ -9078,6 +9082,45 @@ mod tests {
         drop(starts);
         app.shutdown();
         task.await.unwrap().unwrap();
+        drop(app);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn scan_worker_publishes_external_cancellation_before_returning() {
+        let directory = std::env::temp_dir().join(format!(
+            "ricoh-scan-worker-cancel-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let client = Arc::new(HeldProductClient {
+            first_started: tokio::sync::Notify::new(),
+            release_first: Arc::new(tokio::sync::Notify::new()),
+            first_attempts: AtomicUsize::new(0),
+            second_attempts: AtomicUsize::new(0),
+        });
+        let app = MonitorApp::open_with_scheduler_client(&directory, client.clone()).unwrap();
+        app.start_product_scan(65, 65).await.unwrap();
+        let mut snapshots = app.subscribe();
+        let generation = *app.scan_epoch.borrow();
+        // 单独运行扫描任务，覆盖主循环尚未轮询到取消状态的窗口。
+        let worker = tokio::spawn({
+            let app = app.clone();
+            async move { app.scan_worker_loop(generation).await }
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(3), client.first_started.notified())
+            .await.unwrap();
+        let controller = MonitorApp::open(&directory).unwrap();
+        controller.control_product_scan(ScanAction::Cancel).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(3), worker)
+            .await.unwrap().unwrap().unwrap();
+        let mut cancelled = false;
+        while let Ok(snapshot) = snapshots.try_recv() {
+            cancelled |= snapshot.scan.is_some_and(|scan| scan.status == ScanStatus::Cancelled);
+        }
+        assert!(cancelled, "扫描任务退出前应向本实例订阅者播送取消终态");
+        assert_eq!(client.first_attempts.load(Ordering::Relaxed), 1);
+        drop(controller);
         drop(app);
         std::fs::remove_dir_all(directory).unwrap();
     }
