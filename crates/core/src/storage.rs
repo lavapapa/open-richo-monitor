@@ -393,7 +393,9 @@ impl Storage {
         Self::from_connection(conn)
     }
 
-    fn from_connection(conn: Connection) -> Result<Self, StorageError> {
+    fn from_connection(mut conn: Connection) -> Result<Self, StorageError> {
+        // 存储事务都涉及写入，先取得写锁，避免 WAL 读快照升级时与其他实例冲突。
+        conn.set_transaction_behavior(TransactionBehavior::Immediate);
         let new_database = conn.query_row(
             "SELECT NOT EXISTS (
                  SELECT 1 FROM sqlite_master
@@ -2289,6 +2291,35 @@ mod tests {
             .unwrap()
             .is_none());
         assert_eq!(storage.check_count("p1").unwrap(), 1);
+    }
+
+    #[test]
+    fn storage_transactions_reserve_the_writer_before_reading() {
+        let database = TempDatabase::new();
+        let mut owner = Storage::open(&database.0).unwrap();
+        let mut controller = Storage::open(&database.0).unwrap();
+        controller.conn.busy_timeout(Duration::ZERO).unwrap();
+
+        let tx = owner.conn.transaction().unwrap();
+        let intent: String = tx
+            .query_row("SELECT run_intent FROM settings WHERE id=1", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(intent, "stopped");
+        assert!(
+            matches!(
+                controller.set_run_intent(RunIntent::Paused, true),
+                Err(StorageError::Sql(rusqlite::Error::SqliteFailure(error, _)))
+                    if error.code == rusqlite::ErrorCode::DatabaseBusy
+            ),
+            "存储事务读取后仍要写入，其他连接应等待整个事务完成"
+        );
+        tx.execute("UPDATE settings SET run_intent='running' WHERE id=1", [])
+            .unwrap();
+        tx.commit().unwrap();
+        controller.set_run_intent(RunIntent::Paused, true).unwrap();
+        assert_eq!(owner.run_intent().unwrap(), RunIntent::Paused);
     }
 
     #[test]
